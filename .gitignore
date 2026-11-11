@@ -16,3 +16,5 @@ requirements.txt
 *.json
 *.txt
 *.md
+tests/fixtures/
+examples/live.html
