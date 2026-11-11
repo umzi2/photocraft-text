@@ -17,4 +17,4 @@ requirements.txt
 *.txt
 *.md
 **/tests/fixtures/
-examples/live.html
+**/examples/live.html
