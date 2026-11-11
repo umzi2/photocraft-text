@@ -1,0 +1,18 @@
+# Rust sources only: no build output, fixtures, tooling or docs.
+target/
+.venv/
+__pycache__/
+*.pyc
+out/
+corpus/
+docs/
+tools/
+requirements.txt
+*.psd
+*.psb
+*.pdf
+*.png
+*.jpg
+*.json
+*.txt
+*.md
