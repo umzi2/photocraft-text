@@ -48,6 +48,16 @@ pub struct RunStyle {
     pub strikethrough: bool,
     pub all_caps: bool,
     pub small_caps: bool,
+    /// `Ligatures`; `None` keeps the sheet's value.
+    pub ligatures: Option<bool>,
+    /// `DLigatures` (Photoshop's "alternate ligatures"); `None` keeps it.
+    pub alternate_ligatures: Option<bool>,
+    /// `Language`, as the `Txt2` `/6/38` code (0 default, 14 English UK,
+    /// 42 German). `EngineData` uses a different id space for some languages,
+    /// so [`engine_language`] translates before writing.
+    pub language: Option<i64>,
+    /// `NoBreak`: keep the run on one line.
+    pub no_break: Option<bool>,
     pub sheet: Option<Value>,
 }
 
@@ -300,6 +310,18 @@ pub fn apply_style_runs(root: &mut Value, styles: &[RunStyle]) -> bool {
                     0
                 }),
             );
+            if let Some(on) = run.ligatures {
+                put("Ligatures", Value::Bool(on));
+            }
+            if let Some(on) = run.alternate_ligatures {
+                put("DLigatures", Value::Bool(on));
+            }
+            if let Some(code) = run.language.and_then(engine_language) {
+                put("Language", Value::Int(code));
+            }
+            if let Some(on) = run.no_break {
+                put("NoBreak", Value::Bool(on));
+            }
             if let Some([r, g, b]) = run.color {
                 // Photoshop stores `[ alpha r g b ]`, alpha first.
                 let values = Value::Array(vec![
@@ -347,6 +369,10 @@ fn parse_style_run(item: &Value, len: usize, fonts: &[String]) -> RunStyle {
         strikethrough: get("Strikethrough").and_then(Value::as_bool).unwrap_or(false),
         all_caps: caps == CAPS_ALL,
         small_caps: caps == CAPS_SMALL,
+        ligatures: get("Ligatures").and_then(Value::as_bool),
+        alternate_ligatures: get("DLigatures").and_then(Value::as_bool),
+        language: get("Language").and_then(Value::as_i64).and_then(txt2_language),
+        no_break: get("NoBreak").and_then(Value::as_bool),
         sheet,
     }
 }
@@ -383,9 +409,155 @@ fn parse_paragraph_run(item: &Value, len: usize) -> ParagraphRun {
     }
 }
 
+/// Translates a `Txt2` `/6/38` language code into `EngineData`'s `Language`.
+///
+/// The two models normally share the id, but not always: English (UK) is `14`
+/// in both while German is `42` in `Txt2` and `4` in `EngineData`
+/// (`docs/txt2-map.md` §2, measured on `out/probe5/pE.psd`). `None` means this
+/// id was never measured, so the mirror leaves the existing value alone rather
+/// than guessing.
+pub fn engine_language(txt2_code: i64) -> Option<i64> {
+    Some(match txt2_code {
+        0 => 0,
+        14 => 14,
+        42 => 4,
+        _ => return None,
+    })
+}
+
+/// Inverse of [`engine_language`]: the `Txt2` code for an `EngineData`
+/// `Language` id, or `None` when the id was never measured.
+pub fn txt2_language(engine_id: i64) -> Option<i64> {
+    Some(match engine_id {
+        0 => 0,
+        14 => 14,
+        4 => 42,
+        _ => return None,
+    })
+}
+
+/// Paragraph formatting that `EngineData` carries beyond [`ParagraphRun`]:
+/// hyphenation and hanging punctuation.
+///
+/// Photoshop keeps these in the same `ParagraphSheet/Properties` dict as the
+/// indents and spacing; the key names are read from Photoshop's own
+/// `EngineData` (`out/probe2/base.psd`: `AutoHyphenate false`,
+/// `HyphenatedWordSize 6`, `PreHyphen 2`, `PostHyphen 2`,
+/// `ConsecutiveHyphens 8`, `Zone 36.0`, `Hanging false`). `Zone` is in points,
+/// the same number `Txt2` keeps at `/5/14` (`out/probe5/pE.psd`: DOM 18 →
+/// `/5/14 18.0`, `Zone 18.0`). The models' *defaults* differ in one place:
+/// `ConsecutiveHyphens` defaults to `8` here, `Txt2` `/5/13` defaults to `0`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParagraphFormat {
+    /// `AutoHyphenate`.
+    pub hyphenate: bool,
+    /// `HyphenatedWordSize`: hyphenate words longer than this.
+    pub words_longer_than: i64,
+    /// `PreHyphen`: characters required before the hyphen.
+    pub after_first: i64,
+    /// `PostHyphen`: characters required after the hyphen.
+    pub before_last: i64,
+    /// `ConsecutiveHyphens`: maximum consecutive hyphens.
+    pub limit: i64,
+    /// `Zone`: hyphenation zone in points (same value as `Txt2` `/5/14`).
+    pub zone: f32,
+    /// `Hanging`: hanging punctuation.
+    pub hanging_punctuation: bool,
+}
+
+impl Default for ParagraphFormat {
+    /// Photoshop's defaults, as its own `EngineData` records them.
+    fn default() -> Self {
+        Self {
+            hyphenate: false,
+            words_longer_than: 6,
+            after_first: 2,
+            before_last: 2,
+            limit: 8,
+            zone: 36.0,
+            hanging_punctuation: false,
+        }
+    }
+}
+
+impl ParagraphFormat {
+    /// The `ParagraphSheet/Properties` keys this format owns.
+    fn entries(&self) -> [(&'static str, Value); 7] {
+        [
+            ("AutoHyphenate", Value::Bool(self.hyphenate)),
+            ("HyphenatedWordSize", Value::Int(self.words_longer_than)),
+            ("PreHyphen", Value::Int(self.after_first)),
+            ("PostHyphen", Value::Int(self.before_last)),
+            ("ConsecutiveHyphens", Value::Int(self.limit)),
+            ("Zone", Value::Float(f64::from(self.zone))),
+            ("Hanging", Value::Bool(self.hanging_punctuation)),
+        ]
+    }
+}
+
+/// Writes hyphenation and hanging punctuation into every paragraph run's
+/// `ParagraphSheet/Properties`.
+///
+/// `formats` is indexed by paragraph run; a single entry applies to every
+/// paragraph and a short list repeats its last value, so callers that format
+/// the whole layer can pass one [`ParagraphFormat`]. Returns false when the
+/// tree has no paragraph runs.
+pub fn apply_paragraph_formats(root: &mut Value, formats: &[ParagraphFormat]) -> bool {
+    let Some(first) = formats.first().copied() else { return false };
+    let Some(engine) = root.get_mut("EngineDict") else { return false };
+    let Some(run) = engine.get_mut("ParagraphRun") else { return false };
+    let Some(items) = run.get_mut("RunArray").and_then(Value::as_array_mut) else { return false };
+    for (i, item) in items.iter_mut().enumerate() {
+        let format = formats.get(i).copied().unwrap_or(first);
+        let Some(props) = item
+            .get_mut("ParagraphSheet")
+            .and_then(|s| s.get_mut("Properties"))
+            .and_then(Value::as_dict_mut)
+        else {
+            continue;
+        };
+        for (key, value) in format.entries() {
+            match props.iter_mut().find(|(k, _)| k == key) {
+                Some((_, slot)) => *slot = value,
+                None => props.push((key.to_owned(), value)),
+            }
+        }
+    }
+    true
+}
+
+/// Reads the hyphenation and hanging punctuation of every paragraph run.
+pub fn paragraph_formats_from_engine_data(root: &Value) -> Vec<ParagraphFormat> {
+    let Some(para_run) = root.get("EngineDict").and_then(|e| e.get("ParagraphRun")) else {
+        return Vec::new();
+    };
+    let items = para_run.get("RunArray").and_then(Value::as_array).unwrap_or(&[]);
+    items
+        .iter()
+        .map(|item| {
+            let props = item.get("ParagraphSheet").and_then(|s| s.get("Properties"));
+            let get = |key: &str| props.and_then(|d| d.get(key));
+            let int = |key: &str, fallback: i64| {
+                get(key).and_then(Value::as_i64).unwrap_or(fallback)
+            };
+            let default = ParagraphFormat::default();
+            ParagraphFormat {
+                hyphenate: get("AutoHyphenate").and_then(Value::as_bool).unwrap_or(default.hyphenate),
+                words_longer_than: int("HyphenatedWordSize", default.words_longer_than),
+                after_first: int("PreHyphen", default.after_first),
+                before_last: int("PostHyphen", default.before_last),
+                limit: int("ConsecutiveHyphens", default.limit),
+                zone: get("Zone").and_then(Value::as_f32).unwrap_or(default.zone),
+                hanging_punctuation: get("Hanging")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(default.hanging_punctuation),
+            }
+        })
+        .collect()
+}
+
 /// `FillColor` is `<< /Type 1 /Values [ alpha r g b ] >>` with components in 0..1.
-fn color_rgb(value: &Value) -> Option<[u8; 3]> {
-    if value.get("Type").and_then(Value::as_i64) != Some(COLOR_TYPE_RGB) {
+fn color_rgb(value: &Value) -> Option<[u8; 3]> {    if value.get("Type").and_then(Value::as_i64) != Some(COLOR_TYPE_RGB) {
         return None;
     }
     let values = value.get("Values").and_then(Value::as_array)?;
@@ -474,6 +646,18 @@ fn sheet_for(run: &RunStyle) -> Vec<(String, Value)> {
     put(&mut d, "Underline", Value::Bool(run.underline));
     put(&mut d, "Strikethrough", Value::Bool(run.strikethrough));
     put_caps(&mut d, run.all_caps, run.small_caps);
+    if let Some(on) = run.ligatures {
+        put(&mut d, "Ligatures", Value::Bool(on));
+    }
+    if let Some(on) = run.alternate_ligatures {
+        put(&mut d, "DLigatures", Value::Bool(on));
+    }
+    if let Some(code) = run.language.and_then(engine_language) {
+        put(&mut d, "Language", Value::Int(code));
+    }
+    if let Some(on) = run.no_break {
+        put(&mut d, "NoBreak", Value::Bool(on));
+    }
     d
 }
 

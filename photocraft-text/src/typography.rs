@@ -286,3 +286,182 @@ pub fn strikeout_geometry(os2: &[u8], size: f32, units_per_em: u16) -> Option<De
         thickness: thick * k,
     })
 }
+
+// ---------------------------------------------------------------------------
+// Measured hanging punctuation (Photoshop 20.0.2, CC 2019)
+// ---------------------------------------------------------------------------
+
+/// Where a character may hang and how much of its advance it keeps in the
+/// line's flow: `0.0` means the glyph hangs entirely in the margin (the next
+/// glyph starts on the margin), `0.5` means half of the advance stays in the
+/// flow. The amounts are measured, not inferred from side bearings: see
+/// `docs/hanging-punctuation.md`, artifacts `out/probe5/chars.pdf` (Noto Sans
+/// 36 pt, box left x = 20) and `out/probe5/hang3..6.pdf`.
+///
+/// Left-hang glyphs measured in `chars.pdf`; the shift of the glyph's pen from
+/// the margin was: `“` 10.40, `”` 10.40, `‘` 3.78, `’` 3.78, `«` 18.32,
+/// `»` 18.32, `-` 11.59, `,` 9.65, `.` 9.65, `;` 4.82, `:` 4.82, `*` 9.92,
+/// `…` 14.24, `–` 9.00, `—` 18.00. For the first group the shift equals the
+/// shaped advance (including kerning to the following glyph: `“A` advances
+/// 10.40 although `“` alone is 12.92), i.e. they keep 0.0 in the flow; `;`,
+/// `:`, `*`, `…`, `–`, `—` are shifted by half their advance, i.e. 0.5.
+/// `(`, `[`, `{`, `!`, `?`, `•` did NOT hang (no table entry).
+pub const LEFT_HANG: &[(char, f32)] = &[
+    ('\u{201C}', 0.0), // “
+    ('\u{201D}', 0.0), // ”
+    ('\u{2018}', 0.0), // ‘
+    ('\u{2019}', 0.0), // ’
+    ('\u{00AB}', 0.0), // «
+    ('\u{00BB}', 0.0), // »
+    ('"', 0.0),
+    ('\'', 0.0),
+    ('-', 0.0),
+    (',', 0.0),
+    ('.', 0.0),
+    (';', 0.5),
+    (':', 0.5),
+    ('*', 0.5),
+    ('\u{2026}', 0.5), // …
+    ('\u{2013}', 0.5), // –
+    ('\u{2014}', 0.5), // —
+];
+
+/// Right-hang characters: a line may end with them, they contribute nothing to
+/// the line-fit width and are drawn after the fitted content, overflowing the
+/// right margin by their advance. Measured in `out/probe5/hang4..6.pdf`
+/// (`AAAAA BBBBB,` fits a 242 pt box with hanging, needs 251 pt without; the
+/// comma is drawn at pen 261.02 for a 242 pt box at x = 20, its ink ends at
+/// 267.7). `;`, `:`, `!`, `?`, `)`, `]`, `}`, `–`, `—`, `…`, `%`, `/` are NOT
+/// in the set (each pushed the preceding word to the next line at box 242).
+pub const RIGHT_HANG: &[(char, f32)] = &[
+    (',', 0.0),
+    ('.', 0.0),
+    ('\u{201D}', 0.0), // ”
+    ('\u{2019}', 0.0), // ’
+    ('\u{00BB}', 0.0), // »
+    ('"', 0.0),
+    ('\'', 0.0),
+    ('-', 0.0),
+];
+
+/// CJK full-width left-hang characters.
+///
+/// **Not measured on a native CJK face.** `out/probe5/chars.pdf` does contain
+/// 『 and （ (the probe text used them; Photoshop rendered them through a
+/// fallback because NotoSans-Regular has no CJK): their pen shifts 17.2805 for
+/// an advance of 35.281, i.e. exactly half the advance stays in the flow. But
+/// the dedicated CJK probe through `AdobeHeitiStd-Regular` showed no hanging at
+/// all (`docs/STATUS.md`, "Hanging Punctuation is Roman-only in this build"),
+/// so whether burasagari applies to a native CJK face is open. The set is
+/// [INFERENCE] from JIS X 4051 and uses the half-em fraction the fallback
+/// measurements show.
+pub const CJK_LEFT_HANG: &[(char, f32)] = &[
+    ('\u{300C}', 0.5), // 「
+    ('\u{300E}', 0.5), // 『
+    ('\u{FF08}', 0.5), // （
+    ('\u{3010}', 0.5), // 【
+    ('\u{3008}', 0.5), // 〈
+    ('\u{300A}', 0.5), // 《
+    ('\u{3014}', 0.5), // 〔
+    ('\u{FF3B}', 0.5), // ［
+    ('\u{FF5B}', 0.5), // ｛
+    ('\u{201C}', 0.5), // “ (CJK text often uses the full-width quote)
+    ('\u{2018}', 0.5), // ‘
+];
+
+/// CJK full-width right-hang characters. [INFERENCE]: no Photoshop artefact
+/// shows a CJK line-final glyph hanging (the CJK hanging probe showed no effect
+/// at all), the model is JIS X 4051 "burasage" with the same half-em fraction.
+pub const CJK_RIGHT_HANG: &[(char, f32)] = &[
+    ('\u{3002}', 0.5), // 。
+    ('\u{3001}', 0.5), // 、
+    ('\u{FF0C}', 0.5), // ，
+    ('\u{FF0E}', 0.5), // ．
+    ('\u{FF1A}', 0.5), // ：
+    ('\u{FF1B}', 0.5), // ；
+    ('\u{FF01}', 0.5), // ！
+    ('\u{FF1F}', 0.5), // ？
+    ('\u{300D}', 0.5), // 」
+    ('\u{300F}', 0.5), // 』
+    ('\u{FF09}', 0.5), // ）
+    ('\u{3011}', 0.5), // 】
+    ('\u{3009}', 0.5), // 〉
+    ('\u{300B}', 0.5), // 》
+    ('\u{3015}', 0.5), // 〕
+    ('\u{FF3D}', 0.5), // ］
+    ('\u{FF5D}', 0.5), // ｝
+    ('\u{2015}', 0.5), // ―
+];
+
+fn lookup(table: &'static [(char, f32)], ch: char) -> Option<f32> {
+    table.iter().find(|(c, _)| *c == ch).map(|(_, f)| *f)
+}
+
+/// Fraction of a left-hanging glyph's advance that stays in the line flow, when
+/// the glyph is one of the measured/inferred left-hang characters. `None` for
+/// characters that do not hang on the left.
+pub fn left_hang_fit(ch: char) -> Option<f32> {
+    lookup(LEFT_HANG, ch).or_else(|| lookup(CJK_LEFT_HANG, ch))
+}
+
+/// Fraction of a right-hanging glyph's advance that stays in the line-fit
+/// width. `None` for characters that do not hang on the right.
+pub fn right_hang_fit(ch: char) -> Option<f32> {
+    lookup(RIGHT_HANG, ch).or_else(|| lookup(CJK_RIGHT_HANG, ch))
+}
+
+/// Whether `ch` may hang into the left margin at the start of a line.
+pub fn is_left_hang(ch: char) -> bool {
+    left_hang_fit(ch).is_some()
+}
+
+/// Whether `ch` may hang into the right margin at the end of a line.
+pub fn is_right_hang(ch: char) -> bool {
+    right_hang_fit(ch).is_some()
+}
+
+/// The overhang a left-hanging glyph adds to the line start (the distance its
+/// pen sits left of the margin). The full advance, minus the part kept in the
+/// flow.
+pub fn left_hang_shift(ch: char, advance: f32) -> f32 {
+    left_hang_fit(ch).map_or(0.0, |fit| advance * (1.0 - fit))
+}
+
+/// Kinsoku line-breaking tables. Latin closing punctuation must not start a
+/// line, opening punctuation must not end one; the CJK sets are the standard
+/// JIS X 4051 sets. Photoshop's paragraph sheet stores `KinsokuOrder` (0 in
+/// every corpus layer) but the mapping of that code to the rule variants is
+/// unmeasured; these are the conservative sets. [INFERENCE] for CJK and for the
+/// Latin punctuation that the hanging probe did not measure.
+pub mod kinsoku {
+    /// Characters that may not start a line (closing punctuation). `,` `.`
+    /// `”` `’` `»` `"` `'` `-` are in the hanging set instead, so a line may
+    /// start with them when hanging is enabled — the breaker checks the
+    /// hanging tables first.
+    pub const NO_LINE_START: &str = ",.;:!?)]}\u{00BB}\u{203A}\u{201D}\u{2019}\u{3001}\u{3002}\u{FF0C}\u{FF0E}\u{FF1A}\u{FF1B}\u{FF01}\u{FF1F}\u{FF09}\u{300D}\u{FF3D}\u{FF5D}\u{300F}\u{3011}\u{3009}\u{300B}\u{3015}\u{30FB}\u{2026}\u{2025}";
+
+    /// Characters that may not end a line (opening punctuation).
+    pub const NO_LINE_END: &str = "([{\u{00AB}\u{2039}\u{201C}\u{2018}\u{300C}\u{300E}\u{FF08}\u{3010}\u{3008}\u{300A}\u{3014}\u{FF3B}\u{FF5B}";
+
+    /// Whether `ch` may start a line.
+    pub fn may_start_line(ch: char) -> bool {
+        !NO_LINE_START.contains(ch)
+    }
+
+    /// Whether `ch` may end a line at a soft break.
+    pub fn may_end_line(ch: char) -> bool {
+        !NO_LINE_END.contains(ch)
+    }
+}
+
+/// Every-line composer tracking nudge as a fraction of the em. Measured by
+/// comparing `out/composer_every.pdf` with `out/composer_single.pdf` (+0.2496 pt
+/// per inter-letter gap at 24 pt) and the two layout caches
+/// (`out/composer_every.psd` `/3 .24959` at 24 pt, `out/c_every.psd`
+/// `/3 .208` at 20 pt).
+pub const EVERY_LINE_TRACK: f32 = 0.0104;
+
+/// Tracking added between two letters of a word by the every-line composer.
+pub fn every_line_nudge(size: f32) -> f32 {
+    size * EVERY_LINE_TRACK
+}

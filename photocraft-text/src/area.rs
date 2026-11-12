@@ -2,11 +2,11 @@
 
 use std::ops::Range;
 
-use crate::composer::{Breaker, Extent, Pieces, Piece};
+use crate::composer::{Breaker, Extent, Piece, Pieces};
 use crate::font::Face;
 use crate::layout::{shape, GlyphPos, TextStyle};
 use crate::runs::{shape_runs_attrs, FontSet, GlyphAttrs, RunStyle};
-use crate::typography::{hanging_adjust, Kinsoku};
+use crate::typography::{self, left_hang_shift};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Justification {
@@ -37,6 +37,14 @@ impl Justification {
 
 impl Justification {
     /// Photoshop's stored code (`Justification` in EngineData, `/0` in `Txt2`).
+    ///
+    /// Code 6 is `Justification.FULLYJUSTIFIED` (docs/txt2-map.md) and it
+    /// really does stretch the last line: in `out/probe5/h2.pdf` the area
+    /// paragraph set with `hanging: true, just: "full"` has its last line
+    /// `and then left.` stretched from 216.08 to 300.01 pt, with the line's
+    /// hanging period appended after the justified content. Codes 3/4/5 are
+    /// unreachable on CC 2019 (`FULLJUSTIFYLASTLINE*` is "Invalid enumeration
+    /// value", `out/probe5/mC1.json`), so `JustifyLastLeft` has no PSD code.
     pub fn from_psd(value: i32) -> Self {
         match value {
             1 => Self::Right,
@@ -44,7 +52,7 @@ impl Justification {
             3 => Self::JustifyLastCenter,
             4 => Self::JustifyLastRight,
             5 => Self::JustifyAll,
-            6 => Self::JustifyLastLeft,
+            6 => Self::JustifyAll,
             _ => Self::Left,
         }
     }
@@ -115,44 +123,27 @@ impl AreaLayout {
 }
 
 /// Photoshop's first-baseline ratio for a font: the fraction of the point size
-/// added to the box top.
+/// added to the box top before the first baseline.
 ///
-/// It is not the `hhea` ascender: measured against Photoshop 20.0.2, CC Wild But
-/// Not Crazy places the first baseline at 0.768 x size while its `hhea` ascender
-/// is 0.838. The exact rule is still unknown (it lives in `Composer@PSSLO`), so
-/// known fonts are calibrated here and everything else falls back to `hhea`.
+/// The ratio is the ink `yMax` of `d` over the em square, which is what
+/// [`Face::ascent_ratio`] computes (falling back to `b`, `h`, `H`, then
+/// `hhea`). Measured against Photoshop 20.0.2 this reproduces every probed font
+/// within 0.0012: 14 fonts in `tests/data/font_ascent.json` (ArialMT 0.716,
+/// NotoSans-Regular 0.760, CCGrimNGritty-Bold 0.801, ...) and the 13 fonts of
+/// `out/probe5/font_ratios.json` (Vampire95 0.465 vs the exact d ratio 0.46603,
+/// v_AgencyFB 0.7644, ...). It is not `hhea`/OS/2 ascendancy: CC Wild But Not
+/// Crazy places its first baseline at 0.77 x size while its `hhea` ascender is
+/// 0.838.
 pub fn first_baseline_ratio(face: &Face<'_>) -> f32 {
-    // Measured from Photoshop's PDF exports (`tools/measure_baseline.py`):
-    // the offset is exactly `ratio * size` and constant across sizes.
-    // The metric behind the ratio is still unknown — it is not `hhea`, OS/2
-    // `typoAscender`, `usWinAscent` or cap height for every font — so known
-    // fonts are tabulated and the rest fall back to `hhea`.
-    const CALIBRATED: [(&str, f32); 4] = [
-        ("vCCWildButNotCrazy", 0.768),
-        ("NotoSans", 0.76),
-        ("NotoSerif", 0.76),
-        ("Arial", 0.716),
-    ];
-    // Family names come with spaces ("Noto Sans"), so compare with spaces and
-    // separators stripped.
-    let key = |s: &str| -> String {
-        s.chars()
-            .filter(|c| c.is_ascii_alphanumeric())
-            .map(|c| c.to_ascii_lowercase())
-            .collect()
-    };
-    if let Some(name) = face.family_name() {
-        let name = key(&name);
-        for (family, ratio) in CALIBRATED {
-            if name == key(family) {
-                return ratio;
-            }
-        }
-    }
-    let upm = face.units_per_em() as f32;
-    face.table(*b"hhea")
-        .map(|h| i16::from_be_bytes([h[4], h[5]]) as f32 / upm)
-        .unwrap_or(0.8)
+    face.ascent_ratio()
+}
+
+/// Distance from the top of an area-text box to its first baseline, in points.
+///
+/// This is the formula Photoshop uses for area text: the ink top of `d` (see
+/// [`first_baseline_ratio`]) times the point size.
+pub fn first_baseline(face: &Face<'_>, size: f32) -> f32 {
+    first_baseline_offset(face.ascent_ratio(), size)
 }
 
 /// Distance from the top of an area-text box to the first baseline, in points.
@@ -284,33 +275,93 @@ fn sub_runs(runs: &[RunStyle], range: Range<usize>) -> (Vec<RunStyle>, Vec<usize
     (out, map)
 }
 
-fn piece_of(g: &GlyphPos, para: &ParagraphStyle, size: f32) -> Piece {
+/// One glyph as the breaker sees it.
+///
+/// Photoshop's paragraph sheet stores word, letter and glyph spacing as
+/// `[minimum, desired, maximum]` (`docs/txt2-map.md` keys `/5/17`, `/5/18`,
+/// `/5/19`). Word spacing is a multiple of the natural space advance (measured:
+/// `corpus/box_justify.psd` stores `[0.8 1.0 1.33]` and the justified PDF's
+/// spaces are `natural * 2.3047`, `* 0.2595`, `* 0.6634` on the three lines,
+/// matching the `/1` adjustment values in the layer's own layout cache).
+/// Glyph spacing is a multiple of the advance, letter spacing a fraction of the
+/// em; no probe reached the engine with non-default values (the DOM setters in
+/// `out/probe5/jobD.json` were no-ops for word/letter spacing, see
+/// `docs/txt2-map.md`), so the *units* of letter/glyph spacing are [INFERENCE].
+///
+/// `justified` makes the desired values the base advance of the piece; the
+/// minimum/maximum values become the shrink/stretch capacity the justification
+/// distributes slack over. For ragged text the spacing values do not apply
+/// (Photoshop's paragraph spacing options act on justified text).
+fn piece_of(g: &GlyphPos, para: &ParagraphStyle, size: f32, justified: bool) -> Piece {
     let adv = g.advance.max(0.0);
     let [ws0, ws1, ws2] = para.word_spacing;
     let [ls0, ls1, ls2] = para.letter_spacing;
     let [gs0, gs1, gs2] = para.glyph_spacing;
-    // [INFERENCE] glyph spacing is a fraction of the advance; letter spacing is
-    // a fraction of the em.
-    let (shrink, stretch) = if g.ch == ' ' {
-        (adv * (ws1 - ws0).max(0.0), adv * (ws2 - ws1).max(0.0))
-    } else {
-        (
-            adv * (gs1 - gs0).max(0.0) + size * (ls1 - ls0).max(0.0),
-            adv * (gs2 - gs1).max(0.0) + size * (ls2 - ls1).max(0.0),
-        )
-    };
-    Piece { ch: g.ch, advance: g.advance, shrink: shrink.min(adv), stretch }
+    if g.ch == ' ' {
+        let base = if justified { adv * ws1 } else { adv };
+        let (shrink, stretch) = if justified {
+            (adv * (ws1 - ws0).max(0.0), adv * (ws2 - ws1).max(0.0))
+        } else {
+            (0.0, 0.0)
+        };
+        return Piece { ch: g.ch, advance: base, shrink: shrink.min(base), stretch };
+    }
+    if !justified {
+        return Piece { ch: g.ch, advance: adv, shrink: 0.0, stretch: 0.0 };
+    }
+    let base = adv * gs1 + size * ls1;
+    let shrink = adv * (gs1 - gs0).max(0.0) + size * (ls1 - ls0).max(0.0);
+    let stretch = adv * (gs2 - gs1).max(0.0) + size * (ls2 - ls1).max(0.0);
+    Piece { ch: g.ch, advance: base, shrink: shrink.min(base), stretch }
+}
+
+/// The every-line composer's tracking nudge: every inter-letter gap inside a
+/// word grows by `0.0104 em`.
+///
+/// Measured: `out/composer_every.pdf` vs `out/composer_single.pdf` (same text,
+/// same box, Noto Sans 24 pt) differ by +0.2496 pt on every glyph whose next
+/// glyph is not a space, and the layer's own layout cache
+/// (`out/composer_every.psd`) records `/3 .24959` on every line. At 20 pt the
+/// same cache records `/3 .208` (`out/c_every.psd`), i.e. `size * 0.0104`.
+/// Point text with the same composer shows no nudge
+/// (`out/probe5/p_composer_every.pdf`), so this is applied to area paragraphs
+/// that actually break into more than one line. [INFERENCE] for a single-line
+/// area paragraph (unmeasured).
+fn apply_every_line_tracking(items: &mut [(GlyphPos, GlyphAttrs)], size: f32) {
+    let nudge = typography::every_line_nudge(size);
+    for i in 0..items.len().saturating_sub(1) {
+        if items[i].0.ch != ' ' && items[i + 1].0.ch != ' ' {
+            items[i].0.advance += nudge;
+        }
+    }
 }
 
 /// Shared inputs of [`place_line`].
-struct Ctx<'a, 'b> {
+struct Ctx<'a> {
     para: &'a ParagraphStyle,
-    breaker: &'a Breaker<'b>,
+    breaker: &'a Breaker,
     origin_x: f32,
 }
 
 /// Places paragraphs stacked from the box top. Each paragraph, empty or not,
 /// steps one leading; lines whose baseline falls outside the box are dropped.
+///
+/// Paragraph geometry: the first line of a paragraph is offset by
+/// `start_indent + first_line_indent`, later lines by `start_indent` (measured:
+/// `out/exp/area_indent.pdf` puts both paragraph first lines of
+/// `area_indent.psd`, which stores `/5/1 24`, `/5/2 18`, `/5/3 12`, at
+/// `x = 19.998 + 42` with a 430 pt box; Photoshop's own recomposition in
+/// `out/exp/area_indent_resaved.psd` has the same glyph-run origin 42.0).
+/// `end_indent` narrows the measure of every line the same way (the sum is the
+/// only indentation model in the Txt2 sheet; no corpus layer wraps against a
+/// right indent, so its effect is unmeasured — `docs/txt2-map.md` marks
+/// `/5/3` NEEDS PROBE).
+///
+/// Space before/after: `space_after` of a paragraph plus `space_before` of the
+/// next are added to the one leading that already separates the paragraphs.
+/// [INFERENCE]: every corpus paragraph has `SpaceBefore = SpaceAfter = 0`
+/// (measured) and the CC 2019 DOM setters are no-ops (`out/probe5/mD.json`,
+/// `docs/txt2-map.md`), so no Photoshop artefact exercises these values.
 fn layout_paragraphs(
     paras: &[Vec<(GlyphPos, GlyphAttrs)>],
     style: &TextStyle,
@@ -321,45 +372,57 @@ fn layout_paragraphs(
     ascender_ratio: f32,
 ) -> AreaLayout {
     let first_off = first_baseline_offset(ascender_ratio, style.size);
-    let kinsoku = para.hanging.then(|| Kinsoku { enabled: true, ..Kinsoku::default() });
-    let justify = para.justification.is_justify();
     let base_avail = width - para.start_indent - para.end_indent;
+    let justify = para.justification.is_justify();
     let mut out = AreaLayout::default();
     // Baselines step by the leading of the line that follows: a line's own runs
     // decide the distance to it, which is how Photoshop stacks mixed sizes.
-    let mut baseline = origin.1 + first_off;
-    let mut from_top = first_off;
+    let mut baseline = origin.1 + first_off + para.space_before;
+    let mut from_top = first_off + para.space_before;
+    let mut seen_paragraph = false;
     for items in paras {
         if items.is_empty() {
             baseline -= style.leading_pt();
             from_top += style.leading_pt();
             continue;
         }
-        let pieces = Pieces::new(items.iter().map(|(g, _)| piece_of(g, para, style.size)).collect());
-        let breaker = Breaker {
-            avail: [base_avail - para.first_line_indent, base_avail],
-            justify,
-            hang: kinsoku.as_ref(),
-        };
+        if seen_paragraph {
+            let gap = para.space_after + para.space_before;
+            baseline -= gap;
+            from_top += gap;
+        }
+        seen_paragraph = true;
+        let mut work: Vec<(GlyphPos, GlyphAttrs)> = items.clone();
+        let avail = [base_avail - para.first_line_indent, base_avail];
+        let pieces = Pieces::new(work.iter().map(|(g, _)| piece_of(g, para, style.size, justify)).collect());
+        let breaker = Breaker::new(avail, justify, para.hanging);
         let ends = if para.every_line_composer {
             let count = breaker.greedy(&pieces).len();
             breaker.optimal(&pieces, count)
         } else {
             breaker.greedy(&pieces)
         };
+        // The measured every-line tracking nudge is applied after the breaks
+        // were chosen from the true metrics; it is small enough not to change
+        // Photoshop's own break decisions (out/composer_every.pdf breaks match
+        // the unnudged layout, and the advances match the nudged one).
+        if para.every_line_composer && ends.len() > 1 {
+            apply_every_line_tracking(&mut work, style.size);
+        }
+        let pieces = Pieces::new(work.iter().map(|(g, _)| piece_of(g, para, style.size, justify)).collect());
         let ctx = Ctx { para, breaker: &breaker, origin_x: origin.0 };
         let mut start = 0;
         for (k, &end) in ends.iter().enumerate() {
-            let line = place_line(&ctx, &pieces, items, (start, end), k, baseline);
+            let line = place_line(&ctx, &pieces, &work, (start, end), k, baseline);
             // Photoshop hides lines whose baseline falls outside the box.
             if from_top <= height {
                 out.lines.push(line);
             }
             start = end;
-            let next_leading = items
+            let next_leading = work
                 .get(end)
                 .map(|(_, attrs)| attrs.leading)
-                .unwrap_or_else(|| items.first().map(|(_, a)| a.leading).unwrap_or(style.leading_pt()));
+                .unwrap_or_else(|| work.first().map(|(_, a)| a.leading).unwrap_or(style.leading_pt()));
             baseline -= next_leading;
             from_top += next_leading;
         }
@@ -368,9 +431,17 @@ fn layout_paragraphs(
 }
 
 /// Places line `range` (paragraph line `k`) with its alignment, justification
-/// and hanging shift.
+/// and hanging punctuation.
+///
+/// Hanging model (measured, `docs/hanging-punctuation.md`): a leading run of
+/// left-hang glyphs is drawn shifted left so the glyph after it starts on the
+/// line's margin (a half-hanging glyph keeps half its advance in the flow); a
+/// trailing run of right-hang glyphs is drawn after the fitted content, so it
+/// overflows the right margin. Justified lines distribute the slack over the
+/// non-hanging content only; the hanging glyphs are never stretched (measured:
+/// `out/probe5/hang4.pdf` keeps the comma advance 9.648 on justified lines).
 fn place_line(
-    ctx: &Ctx<'_, '_>,
+    ctx: &Ctx<'_>,
     pieces: &Pieces,
     items: &[(GlyphPos, GlyphAttrs)],
     (start, end): (usize, usize),
@@ -380,36 +451,31 @@ fn place_line(
     let para = ctx.para;
     let breaker = ctx.breaker;
     let avail = breaker.avail_for(k) as f32;
-    let ext: Extent = breaker.extent(pieces, start, end, k);
+    let ext: Extent = breaker.extent(pieces, start, end);
     let content_w = ext.width as f32;
     let is_last = end == items.len();
+    let justify_line = breaker.justify && (!is_last || para.justification == Justification::JustifyAll);
 
-    let mut deltas = vec![0f32; end - start];
-    // `JustifyAll` stretches the last line too; the other justify variants
-    // leave it aligned per their last-line rule.
-    if breaker.justify && (!is_last || para.justification == Justification::JustifyAll) {
-        if para.every_line_composer {
-            deltas = breaker.distribute(pieces, start, end, k);
-        } else {
-            // Photoshop distributes the slack over the interior spaces.
-            let content = &items[start..ext.end];
-            let gaps = content.iter().filter(|(g, _)| g.ch == ' ').count();
-            if gaps > 0 {
-                let extra = (avail - content_w) / gaps as f32;
-                for (d, (g, _)) in deltas.iter_mut().zip(content) {
-                    if g.ch == ' ' {
-                        *d = extra;
-                    }
-                }
-            }
+    // Desired spacing values may move the base advance away from the shaped one;
+    // justification then distributes the remaining slack over the pieces'
+    // min/max capacity.
+    let mut deltas: Vec<f32> = (start..end).map(|i| pieces.items[i].advance - items[i].0.advance).collect();
+    if justify_line && ext.end > ext.start {
+        let slack = breaker.distribute(pieces, start, end, k);
+        for (d, s) in deltas.iter_mut().zip(slack) {
+            *d += s;
         }
     }
 
+    // Left-hang prefix: shift all prefix glyphs left by the width they hang, so
+    // the rest of the line starts where the fit test measured it.
+    let hang_left: f32 = items[start..ext.start].iter().map(|(g, _)| left_hang_shift(g.ch, g.advance)).sum();
+
     let indent = para.start_indent + if k == 0 { para.first_line_indent } else { 0.0 };
-    let mut x = ctx.origin_x + indent;
-    // A stretched line fills the width, so its origin is the left edge; the
-    // remaining cases align the line as a whole.
-    let align = if breaker.justify && !is_last {
+    let mut margin = ctx.origin_x + indent;
+    // A stretched line fills the measure, so its origin is the left edge; the
+    // remaining cases align the measured (fitted) width as a whole.
+    let align = if justify_line {
         Justification::Left
     } else {
         match para.justification {
@@ -419,29 +485,26 @@ fn place_line(
         }
     };
     match align {
-        Justification::Right => x += avail - content_w,
-        Justification::Center => x += (avail - content_w) / 2.0,
+        Justification::Right => margin += avail - content_w,
+        Justification::Center => margin += (avail - content_w) / 2.0,
         _ => {}
     }
 
-    let adjusted: Vec<(GlyphPos, GlyphAttrs)> = items[start..end]
-        .iter()
-        .zip(&deltas)
-        .map(|((g, a), d)| (GlyphPos { advance: g.advance + d, ..*g }, *a))
-        .collect();
-    if let Some(kin) = breaker.hang {
-        let content: Vec<GlyphPos> = adjusted[..ext.end - start].iter().map(|(g, _)| *g).collect();
-        x += hanging_adjust(&content, avail, kin);
-    }
-
-    let x0 = x;
-    let mut pen = x;
-    let mut glyphs = Vec::with_capacity(adjusted.len());
-    let mut attrs = Vec::with_capacity(adjusted.len());
-    for (g, a) in adjusted {
-        glyphs.push(GlyphPos { x: pen, y: baseline + g.y, ..g });
-        attrs.push(a);
-        pen += g.advance;
+    let x0 = margin - hang_left;
+    let mut pen = x0;
+    let mut glyphs = Vec::with_capacity(end - start);
+    let mut attrs = Vec::with_capacity(end - start);
+    for (i, (g, a)) in items[start..end].iter().enumerate() {
+        let advance = g.advance + deltas[i];
+        // Store the advance actually used for the pen walk: justified and
+        // spacing-adjusted lines move letters and spaces, and consumers that
+        // measure a line by `x + advance` (layer bounds, PDF dumps) must see the
+        // drawn advance, not the shaped metric one.
+        let mut placed = GlyphPos { x: pen, y: baseline + g.y, ..*g };
+        placed.advance = advance;
+        glyphs.push(placed);
+        attrs.push(*a);
+        pen += advance;
     }
     Line { glyphs, baseline, width: pen - x0, attrs }
 }

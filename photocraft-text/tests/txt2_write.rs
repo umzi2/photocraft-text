@@ -311,3 +311,25 @@ fn run_table_bytes_location() {
     eprintln!("run0 at {s}..{e}: {:?}", String::from_utf8_lossy(&block[s.saturating_sub(40)..e.min(block.len())]));
     eprintln!("font raw at {:?}", block.windows(17).position(|w| w == b"/99 /CoolTypeFont"));
 }
+
+/// Parentheses (and backslashes) inside the layer text must be stored with
+/// CoolType's byte-wise backslash escapes: Photoshop itself writes
+/// `00 5c 28` for "(" (verified in `out/demo/10_all_features.psd`, text
+/// "English (UK)").  An unescaped parenthesis truncates the string token and
+/// Photoshop 20.0.2 refuses to open the file (`out/demo/03` was such a file).
+#[test]
+fn parentheses_and_backslashes_round_trip_in_text() {
+    let block = corpus_block("plain_latin");
+    let text = "A (B) C \\ D\rSecond (line) \\ end";
+    let out = txt2::replace_text(&block, text).unwrap();
+    assert_eq!(txt2::read_text(&out).as_deref(), Some(text));
+    // The raw token must escape '(' as `00 5c 28`, exactly like Photoshop.
+    assert!(out.windows(3).any(|w| w == b"\x00\x5c\x28"));
+    assert!(out.windows(3).any(|w| w == b"\x00\x5c\x29"));
+    assert!(out.windows(3).any(|w| w == b"\x00\x5c\x5c"));
+    // Run tables still agree with the escaped text length.
+    let units = text.encode_utf16().count() + 1;
+    let split = txt2::set_run_layout(&out, &[units as i64]).unwrap();
+    assert_eq!(txt2::run_lengths(&split).unwrap(), vec![units as i64]);
+    txt2::tokens(&split).unwrap();
+}

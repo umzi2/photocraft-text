@@ -63,8 +63,13 @@ fn optical_kern_leaves_pairs_without_facing_outlines_alone() {
     assert_eq!(optical_kern(&face, a, space, 48.0), 0.0);
     // `A` and `R` overlap vertically; a pair that does not (period over a
     // comma has no shared rows) must not be kerned.
-    // A glyph with no outline (a soft hyphen) has nothing to measure.
-    if let Some(empty) = face.glyph_index('\u{00AD}').or_else(|| face.glyph_index('\u{200B}')) {
+    // A glyph with no outline has nothing to measure.  Noto gives a soft
+    // hyphen a real outline, so look for a candidate whose bbox is empty.
+    let empty = ['\u{200B}', '\u{FEFF}', '\u{00AD}']
+        .into_iter()
+        .filter_map(|c| face.glyph_index(c))
+        .find(|&gid| face.glyph_bbox(gid).is_none());
+    if let Some(empty) = empty {
         assert_eq!(optical_kern(&face, empty, a, 48.0), 0.0);
         assert_eq!(optical_kern(&face, a, empty, 48.0), 0.0);
     }

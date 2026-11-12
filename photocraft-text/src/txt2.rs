@@ -21,20 +21,32 @@ const TERMINATOR: [u8; 2] = [0x00, 0x0d];
 pub fn utf16(s: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(s.len() * 2 + 4);
     out.extend_from_slice(&BOM);
-    for unit in s.encode_utf16() {
-        out.extend_from_slice(&unit.to_be_bytes());
-    }
+    push_escaped(&mut out, s);
     out.extend_from_slice(&TERMINATOR);
     out
+}
+
+/// Pushes UTF-16BE bytes with CoolType's string escapes.  A literal `(`, `)`
+/// or `\` inside a parenthesised string must be backslash-escaped; without
+/// this a single parenthesis in the layer text truncates the token and
+/// Photoshop refuses to open the file (reproduced with `out/demo/03`).  The
+/// escapes are byte-wise, so the low byte of the UTF-16 code unit is escaped.
+fn push_escaped(out: &mut Vec<u8>, s: &str) {
+    for unit in s.encode_utf16() {
+        for byte in unit.to_be_bytes() {
+            if matches!(byte, b'(' | b')' | b'\\') {
+                out.push(b'\\');
+            }
+            out.push(byte);
+        }
+    }
 }
 
 /// BOM-prefixed UTF-16BE with no terminator, as used for names (fonts, sheets).
 fn utf16_name(s: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(s.len() * 2 + 2);
     out.extend_from_slice(&BOM);
-    for unit in s.encode_utf16() {
-        out.extend_from_slice(&unit.to_be_bytes());
-    }
+    push_escaped(&mut out, s);
     out
 }
 
@@ -77,12 +89,15 @@ pub fn text_span(block: &[u8]) -> Option<(usize, usize)> {
     if block.get(start..start + 2)? != BOM {
         return None;
     }
+    // The body can contain backslash escapes, so scan byte-wise: the only
+    // `0x00 0x0d` pair in a text string is the terminator (a U+0D00 unit is
+    // stored as `0d 00`, and a literal U+000D is not allowed in the text).
     let mut j = start + 2;
     while j + 3 <= block.len() {
         if block[j..j + 2] == TERMINATOR && block[j + 2] == b')' {
             return Some((start, j + 2));
         }
-        j += 2;
+        j += 1;
     }
     None
 }
@@ -90,10 +105,17 @@ pub fn text_span(block: &[u8]) -> Option<(usize, usize)> {
 /// The layer text as Photoshop sees it.
 pub fn read_text(block: &[u8]) -> Option<String> {
     let (start, end) = text_span(block)?;
-    let units: Vec<u16> = block[start + 2..end - 2]
-        .chunks_exact(2)
-        .map(|c| u16::from_be_bytes([c[0], c[1]]))
-        .collect();
+    let body = &block[start + 2..end - 2];
+    let mut raw = Vec::with_capacity(body.len());
+    let mut i = 0;
+    while i < body.len() {
+        if body[i] == b'\\' && i + 1 < body.len() {
+            i += 1;
+        }
+        raw.push(body[i]);
+        i += 1;
+    }
+    let units: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
     String::from_utf16(&units).ok()
 }
 
@@ -512,6 +534,15 @@ pub enum Value {
     Name(String),
 }
 
+impl Value {
+    fn as_bool(&self) -> Option<bool> {
+        match self {
+            Value::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+}
+
 fn encode_value(v: &Value) -> Vec<u8> {
     match v {
         Value::Int(i) => i.to_string().into_bytes(),
@@ -600,35 +631,66 @@ pub fn value_range(block: &[u8], path: &[Step<'_>]) -> Result<(usize, usize), Er
 ///
 /// Keys are the ones Photoshop writes in the paragraph entry's property dict
 /// (`/1/1/[0]/0/5/0/<run>/0/0/5`); each was measured by varying one control in
-/// Photoshop and diffing two documents (`examples/txt2_diff`).
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Photoshop and diffing two documents (`examples/txt2_diff`), or by authoring
+/// the slot and letting Photoshop re-lay-out and re-save the layer
+/// (`out/verify/*.psd`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParagraphProperty {
-    /// `/0`: `0` left, `1` right, `2` centre, `6` justify all.
+    /// `/0`: `0` left, `1` right, `2` centre, `6` justify all
+    /// (`out/probe2/just_right.psd`, `just_center.psd`, `out/verify/just_center.psd`).
     Justification,
-    /// `/1`, points: first-line indent.
+    /// `/1`, points: first-line indent. Measured by authoring only: the DOM
+    /// setters silently fail, `out/exp/area_indent.psd` proves the slot
+    /// (pen x = layer 20 + start 18 + first 24).
     FirstLineIndent,
     /// `/2`, points: left (start) indent.
     StartIndent,
     /// `/3`, points: right (end) indent.
     EndIndent,
-    /// `/4`, points: space before the paragraph.
+    /// `/4`, points: space before the paragraph. **Unconfirmed**: not measured
+    /// differentially yet, kept for the existing writer's callers.
     SpaceBefore,
-    /// `/5`, points: space after the paragraph.
+    /// `/5`, points: space after the paragraph. **Unconfirmed**, like `/4`.
     SpaceAfter,
-    /// `/7`, fraction of the size: the auto-leading ratio.
+    /// `/7`, fraction of the size: the auto-leading ratio (`1.2` default,
+    /// `1.5` measured in `out/exp/auto15.psd`).
     AutoLeading,
-    /// `/29`, boolean: every-line composer.
-    EveryLineComposer,
+    /// `/9`, boolean: hyphenate (`AutoHyphenate` in `EngineData`).
+    Hyphenate,
+    /// `/10`: hyphenate words longer than this many characters.
+    HyphenateWordSize,
+    /// `/11`: minimum characters before the hyphen.
+    HyphenateAfterFirst,
+    /// `/12`: minimum characters after the hyphen.
+    HyphenateBeforeLast,
+    /// `/13`: maximum consecutive hyphens.
+    HyphenLimit,
+    /// `/14`: hyphenation zone in points. A default paragraph sheet may
+    /// materialise `36.0` (Photoshop's own default), but a measured value is
+    /// stored 1:1: DOM 18 pt -> `/5/14 = 18.0` (`out/probe5/pE.psd`).
+    HyphenationZone,
+    /// `/15`: hyphenate capitalised words. No `EngineData` key is known for
+    /// this one, so it reaches `Txt2` only.
+    HyphenateCapitalWords,
     /// `/17`, `[min desired max]` word spacing as fractions of the space width.
     WordSpacing,
     /// `/18`, `[min desired max]`: letter spacing, fractions of the em.
     LetterSpacing,
-    /// `/19`, `[min desired max]`: glyph scaling.
+    /// `/19`, `[min desired max]`: glyph scaling (`GlyphSpacing` in
+    /// `EngineData`; `out/probe2/glyph_scaling.psd` measured `[.9 1.0 1.1]`).
     GlyphScaling,
+    /// `/21`, boolean: hanging punctuation (`Hanging` in `EngineData`;
+    /// `out/verify/hang.psd`).
+    HangingPunctuation,
+    /// `/29`, boolean: every-line composer (`out/probe2/composer_every.psd`
+    /// could not measure it — the ExtendScript enum is invalid on CC 2019 — so
+    /// the key comes from Photoshop's own paragraph dict).
+    EveryLineComposer,
 }
 
 impl ParagraphProperty {
-    fn key(self) -> &'static str {
+    /// The dict key Photoshop stores this property under.
+    pub fn key(self) -> &'static str {
         match self {
             ParagraphProperty::Justification => "0",
             ParagraphProperty::FirstLineIndent => "1",
@@ -637,10 +699,139 @@ impl ParagraphProperty {
             ParagraphProperty::SpaceBefore => "4",
             ParagraphProperty::SpaceAfter => "5",
             ParagraphProperty::AutoLeading => "7",
+            ParagraphProperty::Hyphenate => "9",
+            ParagraphProperty::HyphenateWordSize => "10",
+            ParagraphProperty::HyphenateAfterFirst => "11",
+            ParagraphProperty::HyphenateBeforeLast => "12",
+            ParagraphProperty::HyphenLimit => "13",
+            ParagraphProperty::HyphenationZone => "14",
+            ParagraphProperty::HyphenateCapitalWords => "15",
             ParagraphProperty::WordSpacing => "17",
             ParagraphProperty::LetterSpacing => "18",
             ParagraphProperty::GlyphScaling => "19",
+            ParagraphProperty::HangingPunctuation => "21",
             ParagraphProperty::EveryLineComposer => "29",
+        }
+    }
+
+    /// The property stored under `key`, or `None` for a key this module does
+    /// not know. Unknown slots are refused rather than written.
+    pub fn from_key(key: &str) -> Option<Self> {
+        [
+            Self::Justification,
+            Self::FirstLineIndent,
+            Self::StartIndent,
+            Self::EndIndent,
+            Self::SpaceBefore,
+            Self::SpaceAfter,
+            Self::AutoLeading,
+            Self::Hyphenate,
+            Self::HyphenateWordSize,
+            Self::HyphenateAfterFirst,
+            Self::HyphenateBeforeLast,
+            Self::HyphenLimit,
+            Self::HyphenationZone,
+            Self::HyphenateCapitalWords,
+            Self::WordSpacing,
+            Self::LetterSpacing,
+            Self::GlyphScaling,
+            Self::HangingPunctuation,
+            Self::EveryLineComposer,
+        ]
+        .into_iter()
+        .find(|p| p.key() == key)
+    }
+}
+
+/// Photoshop's paragraph justification code, as stored in `Txt2` `/5/0` and in
+/// `EngineData` `Justification`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Justification {
+    /// `0`.
+    Left,
+    /// `1`.
+    Right,
+    /// `2`.
+    Center,
+    /// `3`.
+    JustifyLastCenter,
+    /// `4`.
+    JustifyLastRight,
+    /// `5`: justify every line, the last one included.
+    JustifyAll,
+    /// `6`: justify all but the last line (left).
+    JustifyLastLeft,
+}
+
+impl Justification {
+    pub fn code(self) -> i64 {
+        match self {
+            Self::Left => 0,
+            Self::Right => 1,
+            Self::Center => 2,
+            Self::JustifyLastCenter => 3,
+            Self::JustifyLastRight => 4,
+            Self::JustifyAll => 5,
+            Self::JustifyLastLeft => 6,
+        }
+    }
+
+    /// Decodes a stored code; `None` for a value Photoshop does not define.
+    pub fn from_code(code: i64) -> Option<Self> {
+        Some(match code {
+            0 => Self::Left,
+            1 => Self::Right,
+            2 => Self::Center,
+            3 => Self::JustifyLastCenter,
+            4 => Self::JustifyLastRight,
+            5 => Self::JustifyAll,
+            6 => Self::JustifyLastLeft,
+            _ => return None,
+        })
+    }
+}
+
+/// Hyphenation settings of one paragraph (`Txt2` `/5/9` … `/5/15`).
+///
+/// Every field is the value **as stored in `Txt2`**. One conversion is worth
+/// knowing: Photoshop's DOM `hyphenateWordsLongerThan` is stored as that value
+/// **+ 1** (`out/probe5/pE.psd`, `hyph_params`: DOM 6 → `/5/10 = 7`), while
+/// `hyphenationZone` is stored in points unchanged (`DOM 18` → `/5/14 = 18.0`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hyphenation {
+    /// `/9`: hyphenate at all.
+    pub hyphenate: bool,
+    /// `/10`: only words longer than this many characters — Photoshop's DOM
+    /// value plus one.
+    pub words_longer_than: i64,
+    /// `/11`: characters required before the hyphen.
+    pub after_first: i64,
+    /// `/12`: characters required after the hyphen.
+    pub before_last: i64,
+    /// `/13`: maximum consecutive hyphens.
+    pub limit: i64,
+    /// `/14`, points: hyphenation zone.
+    pub zone_pt: f32,
+    /// `/15`: hyphenate capitalised words.
+    pub capital_words: bool,
+}
+
+impl Default for Hyphenation {
+    /// The values Photoshop's shared default paragraph sheet `/1/3` carries, so
+    /// this is what it materialises when hyphenation is switched on without
+    /// touching the parameters (`out/probe5/pE.psd`, `hyphenation`:
+    /// `6 / 2 / 2 / 0 / 36.0 / true`). Note that `EngineData`'s default for
+    /// `ConsecutiveHyphens` is `8` where `Txt2` stores `0` — the two models'
+    /// default sheets disagree there, as `docs/txt2-map.md` records.
+    fn default() -> Self {
+        Self {
+            hyphenate: false,
+            words_longer_than: 6,
+            after_first: 2,
+            before_last: 2,
+            limit: 0,
+            zone_pt: 36.0,
+            capital_words: true,
         }
     }
 }
@@ -658,9 +849,60 @@ pub fn antialias_path() -> Vec<Step<'static>> {
     ]
 }
 
+/// Path to the layer's antialias dictionary (`/1/1[0]/0/10`).
+///
+/// Photoshop omits the whole dictionary for `AntiAlias::Smooth` — smooth is
+/// the implicit mode when the key is absent (`docs/txt2-map.md` §4,
+/// `out/probe2/aa_smooth.psd`).
+pub fn antialias_dict_path() -> Vec<Step<'static>> {
+    vec![
+        Step::Key("1"),
+        Step::Key("1"),
+        Step::Index(0),
+        Step::Key("0"),
+        Step::Key("10"),
+    ]
+}
+
 /// Writes the layer's antialias code (`raster::AntiAlias::code`).
+///
+/// `3` (smooth) is encoded by removing the `/10` dictionary, which is how
+/// Photoshop stores it; every other code writes `/10/0`. A template that has
+/// no `/10` dict (smooth) gets one back in Photoshop's own shape
+/// `/10 << /0 <code> /2 true >>` when a non-smooth code is authored.
 pub fn set_antialias(block: &[u8], code: i64) -> Result<Vec<u8>, Error> {
+    let smooth = crate::raster::AntiAlias::Smooth.code();
+    if code == smooth {
+        return remove_entry(block, &antialias_dict_path());
+    }
+    let toks = tokens(block)?;
+    if resolve(&toks, &antialias_dict_path()).is_none() {
+        let value = format!("<< /0 {code} /2 true >>");
+        return ensure_container(block, &antialias_dict_path(), value.as_bytes());
+    }
     replace_value(block, &antialias_path(), &Value::Int(code))
+}
+
+/// Removes the dictionary entry whose value ends at `path` (a key of its
+/// parent dict), together with the whitespace that follows it.
+///
+/// The whitespace before the key becomes the separator for whatever follows,
+/// so the result keeps Photoshop's single-space style and stays tokenisable.
+fn remove_entry(block: &[u8], path: &[Step<'_>]) -> Result<Vec<u8>, Error> {
+    let toks = tokens(block)?;
+    let Some(value_index) = resolve(&toks, path) else {
+        return Ok(block.to_vec());
+    };
+    let key_index = value_index
+        .checked_sub(1)
+        .ok_or_else(|| Error::Txt2("entry has no key".into()))?;
+    let next = skip_value(&toks, value_index)
+        .ok_or_else(|| Error::Txt2("entry has no end".into()))?;
+    let start = toks[key_index].start;
+    let end = toks.get(next).map_or(block.len(), |t| t.start);
+    let mut out = block.to_vec();
+    out.drain(start..end);
+    Ok(out)
 }
 
 /// Path to paragraph run `i`'s property dictionary.
@@ -679,6 +921,9 @@ pub fn paragraph_count(block: &[u8]) -> Result<usize, Error> {
 }
 
 /// Writes one scalar paragraph property of paragraph run `i`.
+///
+/// Fails when the template does not carry the slot; use
+/// [`set_paragraph_property_or_insert`] to add it.
 pub fn set_paragraph_property(
     block: &[u8],
     i: usize,
@@ -688,6 +933,19 @@ pub fn set_paragraph_property(
     let mut path = paragraph_props_path(i);
     path.push(Step::Key(property.key()));
     replace_value(block, &path, value)
+}
+
+/// Writes one scalar paragraph property, inserting it when the template omits
+/// the slot (Photoshop leaves `/5/10` … `/5/15` out while hyphenation is off).
+pub fn set_paragraph_property_or_insert(
+    block: &[u8],
+    i: usize,
+    property: ParagraphProperty,
+    value: &Value,
+) -> Result<Vec<u8>, Error> {
+    let mut path = paragraph_props_path(i);
+    path.push(Step::Key(property.key()));
+    ensure_value(block, &path, value)
 }
 
 /// Writes a `[min desired max]` triple (word/letter spacing, glyph scaling).
@@ -705,7 +963,268 @@ pub fn set_paragraph_range(
         format_real(f64::from(values[1])),
         format_real(f64::from(values[2]))
     );
-    replace_container(block, &path, value.as_bytes())
+    ensure_container(block, &path, value.as_bytes())
+}
+
+/// Reads one scalar paragraph property of paragraph run `i`.
+///
+/// `None` when the slot, the paragraph or the block is absent; the
+/// `[min desired max]` triples are read with [`paragraph_range`].
+pub fn paragraph_property(block: &[u8], i: usize, property: ParagraphProperty) -> Option<Value> {
+    let mut path = paragraph_props_path(i);
+    path.push(Step::Key(property.key()));
+    scalar_at(block, &path)
+}
+
+/// Reads a `[min desired max]` triple, or `None` when the slot is absent.
+pub fn paragraph_range(
+    block: &[u8],
+    i: usize,
+    property: ParagraphProperty,
+) -> Option<[f32; 3]> {
+    let mut path = paragraph_props_path(i);
+    path.push(Step::Key(property.key()));
+    let (start, end) = value_span(&tokens(block).ok()?, &path)?;
+    let text = std::str::from_utf8(&block[start..end]).ok()?;
+    let body = text.strip_prefix('[')?.split(']').next()?;
+    let nums: Vec<f32> = body.split_whitespace().filter_map(|t| t.parse().ok()).collect();
+    match nums.as_slice() {
+        [a, b, c] => Some([*a, *b, *c]),
+        _ => None,
+    }
+}
+
+/// Justification of paragraph run `i` (`/5/0`).
+pub fn set_paragraph_justification(
+    block: &[u8],
+    i: usize,
+    justification: Justification,
+) -> Result<Vec<u8>, Error> {
+    set_paragraph_property(block, i, ParagraphProperty::Justification, &Value::Int(justification.code()))
+}
+
+/// Same, from a stored code. Rejects codes Photoshop does not define.
+pub fn set_paragraph_justification_code(block: &[u8], i: usize, code: i64) -> Result<Vec<u8>, Error> {
+    let j = Justification::from_code(code)
+        .ok_or_else(|| Error::Txt2(format!("not a justification: {code} (0..6)")))?;
+    set_paragraph_justification(block, i, j)
+}
+
+pub fn paragraph_justification(block: &[u8], i: usize) -> Option<Justification> {
+    match paragraph_property(block, i, ParagraphProperty::Justification)? {
+        Value::Int(code) => Justification::from_code(code),
+        _ => None,
+    }
+}
+
+/// First-line indent of paragraph run `i`, points (`/5/1`).
+pub fn set_paragraph_first_line_indent(block: &[u8], i: usize, points: f32) -> Result<Vec<u8>, Error> {
+    set_paragraph_property(
+        block,
+        i,
+        ParagraphProperty::FirstLineIndent,
+        &Value::Real(f64::from(points)),
+    )
+}
+
+pub fn paragraph_first_line_indent(block: &[u8], i: usize) -> Option<f32> {
+    paragraph_number(block, i, ParagraphProperty::FirstLineIndent)
+}
+
+/// Left (start) indent of paragraph run `i`, points (`/5/2`).
+pub fn set_paragraph_start_indent(block: &[u8], i: usize, points: f32) -> Result<Vec<u8>, Error> {
+    set_paragraph_property(
+        block,
+        i,
+        ParagraphProperty::StartIndent,
+        &Value::Real(f64::from(points)),
+    )
+}
+
+pub fn paragraph_start_indent(block: &[u8], i: usize) -> Option<f32> {
+    paragraph_number(block, i, ParagraphProperty::StartIndent)
+}
+
+/// Right (end) indent of paragraph run `i`, points (`/5/3`).
+pub fn set_paragraph_end_indent(block: &[u8], i: usize, points: f32) -> Result<Vec<u8>, Error> {
+    set_paragraph_property(
+        block,
+        i,
+        ParagraphProperty::EndIndent,
+        &Value::Real(f64::from(points)),
+    )
+}
+
+pub fn paragraph_end_indent(block: &[u8], i: usize) -> Option<f32> {
+    paragraph_number(block, i, ParagraphProperty::EndIndent)
+}
+
+/// Auto-leading fraction of paragraph run `i` (`/5/7`, `1.2` = 120%).
+pub fn set_paragraph_auto_leading(block: &[u8], i: usize, fraction: f32) -> Result<Vec<u8>, Error> {
+    if !(fraction.is_finite() && fraction > 0.0) {
+        return Err(Error::Txt2(format!("not an auto-leading fraction: {fraction}")));
+    }
+    set_paragraph_property(
+        block,
+        i,
+        ParagraphProperty::AutoLeading,
+        &Value::Real(f64::from(fraction)),
+    )
+}
+
+pub fn paragraph_auto_leading(block: &[u8], i: usize) -> Option<f32> {
+    paragraph_number(block, i, ParagraphProperty::AutoLeading)
+}
+
+/// Hanging punctuation of paragraph run `i` (`/5/21`).
+pub fn set_paragraph_hanging_punctuation(block: &[u8], i: usize, on: bool) -> Result<Vec<u8>, Error> {
+    set_paragraph_property(
+        block,
+        i,
+        ParagraphProperty::HangingPunctuation,
+        &Value::Bool(on),
+    )
+}
+
+pub fn paragraph_hanging_punctuation(block: &[u8], i: usize) -> Option<bool> {
+    match paragraph_property(block, i, ParagraphProperty::HangingPunctuation)? {
+        Value::Bool(b) => Some(b),
+        _ => None,
+    }
+}
+
+/// Every-line composer of paragraph run `i` (`/5/29`).
+pub fn set_paragraph_every_line_composer(
+    block: &[u8],
+    i: usize,
+    on: bool,
+) -> Result<Vec<u8>, Error> {
+    set_paragraph_property(
+        block,
+        i,
+        ParagraphProperty::EveryLineComposer,
+        &Value::Bool(on),
+    )
+}
+
+pub fn paragraph_every_line_composer(block: &[u8], i: usize) -> Option<bool> {
+    match paragraph_property(block, i, ParagraphProperty::EveryLineComposer)? {
+        Value::Bool(b) => Some(b),
+        _ => None,
+    }
+}
+
+/// Writes the hyphenation slots of paragraph run `i` (`/5/9` … `/5/15`).
+///
+/// Photoshop only stores the detail keys while hyphenation is on — `/10` …
+/// `/15` are absent in a plain run sheet — so they are inserted only when
+/// `hyphenate` is true; switching hyphenation off writes `/9 false` and leaves
+/// any existing detail keys alone. The zone is stored in points, the same
+/// number `EngineData` `Zone` keeps (`out/probe5/pE.psd`: DOM 18 → `/5/14
+/// 18.0`, `Zone 18.0`).
+pub fn set_paragraph_hyphenation(
+    block: &[u8],
+    i: usize,
+    hyphenation: Hyphenation,
+) -> Result<Vec<u8>, Error> {
+    if !(hyphenation.zone_pt.is_finite() && hyphenation.zone_pt >= 0.0) {
+        return Err(Error::Txt2(format!("not a hyphenation zone: {}", hyphenation.zone_pt)));
+    }
+    for (prop, value) in [
+        (ParagraphProperty::HyphenateWordSize, hyphenation.words_longer_than),
+        (ParagraphProperty::HyphenateAfterFirst, hyphenation.after_first),
+        (ParagraphProperty::HyphenateBeforeLast, hyphenation.before_last),
+        (ParagraphProperty::HyphenLimit, hyphenation.limit),
+    ] {
+        if value < 0 {
+            return Err(Error::Txt2(format!("negative hyphenation value {value} for {prop:?}")));
+        }
+    }
+    let mut out = block.to_vec();
+    out = set_paragraph_property_or_insert(&out, i, ParagraphProperty::Hyphenate, &Value::Bool(hyphenation.hyphenate))?;
+    if !hyphenation.hyphenate {
+        return Ok(out);
+    }
+    out = set_paragraph_property_or_insert(
+        &out,
+        i,
+        ParagraphProperty::HyphenateWordSize,
+        &Value::Int(hyphenation.words_longer_than),
+    )?;
+    out = set_paragraph_property_or_insert(
+        &out,
+        i,
+        ParagraphProperty::HyphenateAfterFirst,
+        &Value::Int(hyphenation.after_first),
+    )?;
+    out = set_paragraph_property_or_insert(
+        &out,
+        i,
+        ParagraphProperty::HyphenateBeforeLast,
+        &Value::Int(hyphenation.before_last),
+    )?;
+    out = set_paragraph_property_or_insert(
+        &out,
+        i,
+        ParagraphProperty::HyphenLimit,
+        &Value::Int(hyphenation.limit),
+    )?;
+    out = set_paragraph_property_or_insert(
+        &out,
+        i,
+        ParagraphProperty::HyphenationZone,
+        &Value::Real(f64::from(hyphenation.zone_pt)),
+    )?;
+    set_paragraph_property_or_insert(
+        &out,
+        i,
+        ParagraphProperty::HyphenateCapitalWords,
+        &Value::Bool(hyphenation.capital_words),
+    )
+}
+
+/// Hyphenation slots of paragraph run `i`.
+///
+/// A run sheet only carries `/10` … `/15` while hyphenation is on; absent
+/// slots read back as the values Photoshop's shared default sheet `/1/3`
+/// holds and materialises when hyphenation is switched on
+/// (`out/probe5/pE.psd`). `None` when the paragraph run itself does not exist.
+pub fn paragraph_hyphenation(block: &[u8], i: usize) -> Option<Hyphenation> {
+    if paragraph_count(block).ok()? <= i {
+        return None;
+    }
+    let default = Hyphenation::default();
+    let int = |prop| match paragraph_property(block, i, prop) {
+        Some(Value::Int(v)) => Some(v),
+        _ => None,
+    };
+    let boolean = |prop, fallback| {
+        paragraph_property(block, i, prop)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(fallback)
+    };
+    Some(Hyphenation {
+        hyphenate: boolean(ParagraphProperty::Hyphenate, default.hyphenate),
+        words_longer_than: int(ParagraphProperty::HyphenateWordSize)
+            .unwrap_or(default.words_longer_than),
+        after_first: int(ParagraphProperty::HyphenateAfterFirst).unwrap_or(default.after_first),
+        before_last: int(ParagraphProperty::HyphenateBeforeLast).unwrap_or(default.before_last),
+        limit: int(ParagraphProperty::HyphenLimit).unwrap_or(default.limit),
+        zone_pt: paragraph_number(block, i, ParagraphProperty::HyphenationZone)
+            .unwrap_or(default.zone_pt),
+        capital_words: boolean(
+            ParagraphProperty::HyphenateCapitalWords,
+            default.capital_words,
+        ),
+    })
+}
+
+fn paragraph_number(block: &[u8], i: usize, property: ParagraphProperty) -> Option<f32> {
+    match paragraph_property(block, i, property)? {
+        Value::Int(v) => Some(v as f32),
+        Value::Real(v) => Some(v as f32),
+        _ => None,
+    }
 }
 
 /// Replaces the scalar at `path` with `value`. Containers are refused: the
@@ -720,6 +1239,96 @@ pub fn replace_value(block: &[u8], path: &[Step<'_>], value: &Value) -> Result<V
     let (start, end) = value_span(&toks, path).ok_or_else(|| Error::Txt2("no span".into()))?;
     let mut out = block.to_vec();
     out.splice(start..end, encode_value(value));
+    Ok(out)
+}
+
+/// Replaces the scalar at `path` with `value`, or inserts it when the slot is
+/// absent.
+///
+/// Photoshop omits the hyphenation detail keys (`/5/10` … `/5/15`) while
+/// hyphenation is off, so authoring them has to add the entries. The dict stays
+/// in ascending key order and the inserted text uses the same single-space
+/// separators Photoshop writes.
+pub fn ensure_value(block: &[u8], path: &[Step<'_>], value: &Value) -> Result<Vec<u8>, Error> {
+    let encoded = encode_value(value);
+    ensure_encoded(block, path, &encoded, false)
+}
+
+/// Same as [`ensure_value`] for a container (a paint dictionary, an array).
+pub fn ensure_container(block: &[u8], path: &[Step<'_>], value: &[u8]) -> Result<Vec<u8>, Error> {
+    ensure_encoded(block, path, value, true)
+}
+
+fn ensure_encoded(
+    block: &[u8],
+    path: &[Step<'_>],
+    encoded: &[u8],
+    container: bool,
+) -> Result<Vec<u8>, Error> {
+    let toks = tokens(block)?;
+    if let Some(index) = resolve(&toks, path) {
+        if container {
+            return replace_container(block, path, encoded);
+        }
+        if matches!(toks[index].kind, Kind::DictOpen | Kind::ArrayOpen) {
+            return Err(Error::Txt2(format!("path is a container, not a scalar: {path:?}")));
+        }
+        let (start, end) = value_span(&toks, path).ok_or_else(|| Error::Txt2("no span".into()))?;
+        let mut out = block.to_vec();
+        out.splice(start..end, encoded.iter().copied());
+        return Ok(out);
+    }
+    let (last, parent) = path.split_last().ok_or_else(|| Error::Txt2("empty path".into()))?;
+    let Step::Key(key) = last else {
+        return Err(Error::Txt2(format!("cannot insert at array index: {path:?}")));
+    };
+    let dict = resolve(&toks, parent)
+        .ok_or_else(|| Error::Txt2(format!("parent dict not found: {parent:?}")))?;
+    if !matches!(toks[dict].kind, Kind::DictOpen) {
+        return Err(Error::Txt2(format!("parent is not a dict: {parent:?}")));
+    }
+    let entries = dict_entries(&toks, dict).ok_or_else(|| Error::Txt2("malformed dict".into()))?;
+    let wanted = key.parse::<i64>().ok();
+    // Insert before the first entry whose (numeric) key is larger, so the dict
+    // keeps Photoshop's ascending order; otherwise before the closing `>>`.
+    let mut at = None;
+    for (name, value_index) in &entries {
+        if let (Some(wanted), Ok(found)) = (wanted, name.parse::<i64>())
+            && found > wanted
+        {
+            at = Some(toks[value_index - 1].start);
+            break;
+        }
+    }
+    let at = match at {
+        Some(pos) => pos,
+        None => {
+            let mut depth = 0i32;
+            let mut close = None;
+            for token in toks.iter().skip(dict) {
+                match token.kind {
+                    Kind::DictOpen | Kind::ArrayOpen => depth += 1,
+                    Kind::DictClose | Kind::ArrayClose => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(token.start);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            close.ok_or_else(|| Error::Txt2("unterminated dict".into()))?
+        }
+    };
+    let mut insert = Vec::with_capacity(encoded.len() + key.len() + 3);
+    insert.push(b'/');
+    insert.extend_from_slice(key.as_bytes());
+    insert.push(b' ');
+    insert.extend_from_slice(encoded);
+    insert.push(b' ');
+    let mut out = block.to_vec();
+    out.splice(at..at, insert);
     Ok(out)
 }
 
@@ -807,7 +1416,21 @@ pub fn set_run_lengths(block: &[u8], lengths: &[i64]) -> Result<Vec<u8>, Error> 
     )
     .ok_or_else(|| Error::Txt2("layer text not found".into()))?;
     let units = match &toks[text].kind {
-        Kind::Str(body) => (body.len() as i64 - 2) / 2,
+        Kind::Str(body) => {
+            // `body` is the raw token: BOM, UTF-16BE units (possibly with
+            // backslash escapes) and the 00 0d terminator.  Unescape before
+            // dividing, otherwise one parenthesis inflates the count.
+            let mut raw = Vec::with_capacity(body.len());
+            let mut i = 0;
+            while i < body.len() {
+                if body[i] == b'\\' && i + 1 < body.len() {
+                    i += 1;
+                }
+                raw.push(body[i]);
+                i += 1;
+            }
+            (raw.len() as i64 - 2) / 2
+        }
         _ => return Err(Error::Txt2("layer text is not a string".into())),
     };
     let total: i64 = lengths.iter().sum();
@@ -827,37 +1450,307 @@ pub fn set_run_font_size(block: &[u8], run: usize, size: f32) -> Result<Vec<u8>,
 }
 
 /// Character properties Photoshop stores inside a `Txt2` style run, with the
-/// key it uses in the run's `/6` dictionary (verified by diffing corpus files
-/// that differ in exactly one parameter).
+/// key it uses in the run's `/6` dictionary.
+///
+/// Every slot listed here is either measured by diffing two documents that
+/// differ in exactly one parameter (`out/probe2/*.psd`) or by authoring the
+/// slot and letting Photoshop re-lay-out and re-save the layer
+/// (`out/verify/*.psd`). Slots with no evidence are deliberately absent:
+/// manual kerning amount `/10` (Photoshop reads it as 16.16 fixed point, see
+/// `out/verify/mk100_res.psd`) and the faux-style stroke width keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunProperty {
-    /// `/6 /1`, points.
+    /// `/6 /0`: index into the block's font table (`ensure_font`).
+    FontIndex,
+    /// `/6 /1`, points (`out/mr`, `plain_latin`).
     FontSize,
-    /// `/6 /4`, boolean: derive the line advance from the auto-leading fraction.
+    /// `/6 /2`, boolean: faux bold (`out/probe2/fauxbold.psd`, `false -> true`).
+    FauxBold,
+    /// `/6 /3`, boolean: faux italic (`out/probe2/fauxitalic.psd`).
+    FauxItalic,
+    /// `/6 /4`, boolean: derive the line advance from the auto-leading fraction
+    /// (`out/probe2/lead40.psd`, `true -> false`).
     AutoLeading,
-    /// `/6 /5`, points (auto leading stores `size * 1.2`).
+    /// `/6 /5`, points (auto leading stores `size * 1.2`;
+    /// `out/probe2/lead40.psd`, `57.6 -> 40.0`).
     Leading,
-    /// `/6 /6`, fraction (1.0 = 100%).
+    /// `/6 /6`, fraction (1.0 = 100%; `out/probe2/hscale150.psd`).
     HorizontalScale,
     /// `/6 /7`, fraction (1.0 = 100%).
     VerticalScale,
-    /// `/6 /8`, 1/1000 em.
+    /// `/6 /8`, 1/1000 em (`out/probe2/tracking100.psd`, `0 -> 100`).
     Tracking,
     /// `/6 /9`, points (positive raises).
     BaselineShift,
+    /// `/6 /11`: `0` manual, `1` metrics, `2` optical
+    /// (`out/probe2/kerning_manual.psd` `1 -> 0`, `kerning_optical.psd` `1 -> 2`).
+    KerningType,
+    /// `/6 /12`: `0` normal, `1` small caps, `2` all caps
+    /// (`out/verify/caps.psd` authored `2`; Photoshop re-rendered ALL CAPS in
+    /// its PDF and kept `2` after re-save).
+    Capitalization,
+    /// `/6 /15`: `0` off, `2` strike-box (`out/verify/strike.psd` authored `2`,
+    /// kept after re-save).
+    Strikethrough,
+    /// `/6 /16`: `0` off, `1` right, `2` left (`out/verify/underline.psd`,
+    /// both sides kept after re-save).
+    Underline,
+    /// `/6 /18`, boolean: standard ligatures. `out/verify/ligoff.psd` authored
+    /// `false`; Photoshop re-saved `Ligatures false`.
+    Ligatures,
+    /// `/6 /19`, boolean: alternate (discretionary) ligatures.
+    AlternateLigatures,
+    /// `/6 /30`: old-style figures; Photoshop's own value for "on" in the
+    /// measured files is `2` (`out/verify/oldstyle.psd`, kept after re-save).
+    OldStyle,
+    /// `/6 /38`: language code (`out/verify/lang.psd` authored `14`; Photoshop
+    /// re-saved `Language 14`).
+    Language,
+    /// `/6 /52`, boolean: no break (keep the run on one line).
+    NoBreak,
+    /// `/6 /53`: fill paint (`SimplePaint`, see [`set_run_fill_color`]).
+    FillPaint,
+    /// `/6 /54`: stroke paint (`SimplePaint`).
+    StrokePaint,
 }
 
 impl RunProperty {
-    fn key(self) -> &'static str {
+    /// The character-sheet key Photoshop stores this property under.
+    pub fn key(self) -> &'static str {
         match self {
+            RunProperty::FontIndex => "0",
             RunProperty::FontSize => "1",
+            RunProperty::FauxBold => "2",
+            RunProperty::FauxItalic => "3",
             RunProperty::AutoLeading => "4",
             RunProperty::Leading => "5",
             RunProperty::HorizontalScale => "6",
             RunProperty::VerticalScale => "7",
             RunProperty::Tracking => "8",
             RunProperty::BaselineShift => "9",
+            RunProperty::KerningType => "11",
+            RunProperty::Capitalization => "12",
+            RunProperty::Strikethrough => "15",
+            RunProperty::Underline => "16",
+            RunProperty::Ligatures => "18",
+            RunProperty::AlternateLigatures => "19",
+            RunProperty::OldStyle => "30",
+            RunProperty::Language => "38",
+            RunProperty::NoBreak => "52",
+            RunProperty::FillPaint => "53",
+            RunProperty::StrokePaint => "54",
         }
+    }
+
+    /// The property stored under `key`, or `None` for a slot this module does
+    /// not know.
+    pub fn from_key(key: &str) -> Option<Self> {
+        [
+            Self::FontIndex,
+            Self::FontSize,
+            Self::FauxBold,
+            Self::FauxItalic,
+            Self::AutoLeading,
+            Self::Leading,
+            Self::HorizontalScale,
+            Self::VerticalScale,
+            Self::Tracking,
+            Self::BaselineShift,
+            Self::KerningType,
+            Self::Capitalization,
+            Self::Strikethrough,
+            Self::Underline,
+            Self::Ligatures,
+            Self::AlternateLigatures,
+            Self::OldStyle,
+            Self::Language,
+            Self::NoBreak,
+            Self::FillPaint,
+            Self::StrokePaint,
+        ]
+        .into_iter()
+        .find(|p| p.key() == key)
+    }
+
+    /// Whether the slot holds a paint dictionary rather than a scalar.
+    pub fn is_paint(self) -> bool {
+        matches!(self, Self::FillPaint | Self::StrokePaint)
+    }
+}
+
+/// How Photoshop kerns a run (`Txt2` `/6/11`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KerningType {
+    /// `0`: manual values, stored per pair or as the run's `Kerning` amount.
+    Manual,
+    /// `1`: pair kerning from the font's `kern`/`GPOS` tables.
+    Metrics,
+    /// `2`: optical, Adobe's area-based spacing (`optical.rs` approximates it).
+    Optical,
+}
+
+impl KerningType {
+    pub fn code(self) -> i64 {
+        match self {
+            Self::Manual => 0,
+            Self::Metrics => 1,
+            Self::Optical => 2,
+        }
+    }
+
+    pub fn from_code(code: i64) -> Option<Self> {
+        Some(match code {
+            0 => Self::Manual,
+            1 => Self::Metrics,
+            2 => Self::Optical,
+            _ => return None,
+        })
+    }
+
+    /// How `EngineData` represents this mode: it only carries the
+    /// metrics/manual switch (`AutoKerning`), so optical stays on the metrics
+    /// side — Photoshop's own `out/probe2/kerning_optical.psd` keeps
+    /// `AutoKerning true`.
+    pub fn engine_auto_kerning(self) -> bool {
+        !matches!(self, Self::Manual)
+    }
+}
+
+/// Character case mapping of a run (`Txt2` `/6/12`, `EngineData` `FontCaps`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Capitalization {
+    /// `0`.
+    Normal,
+    /// `1`: small caps.
+    SmallCaps,
+    /// `2`: all caps (`out/verify/caps_res.psd` renders ALL CAPS).
+    AllCaps,
+}
+
+impl Capitalization {
+    pub fn code(self) -> i64 {
+        match self {
+            Self::Normal => 0,
+            Self::SmallCaps => 1,
+            Self::AllCaps => 2,
+        }
+    }
+
+    pub fn from_code(code: i64) -> Option<Self> {
+        Some(match code {
+            0 => Self::Normal,
+            1 => Self::SmallCaps,
+            2 => Self::AllCaps,
+            _ => return None,
+        })
+    }
+
+    /// `EngineData` `FontCaps` uses the same three codes.
+    pub fn engine_font_caps(self) -> i64 {
+        self.code()
+    }
+}
+
+/// Underline position of a run (`Txt2` `/6/16`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Underline {
+    /// `0`: no underline.
+    Off,
+    /// `1`: underline on the right of vertical text.
+    Right,
+    /// `2`: underline on the left (ordinary horizontal text).
+    Left,
+}
+
+impl Underline {
+    pub fn code(self) -> i64 {
+        match self {
+            Self::Off => 0,
+            Self::Right => 1,
+            Self::Left => 2,
+        }
+    }
+
+    pub fn from_code(code: i64) -> Option<Self> {
+        Some(match code {
+            0 => Self::Off,
+            1 => Self::Right,
+            2 => Self::Left,
+            _ => return None,
+        })
+    }
+
+    /// `EngineData` only has a boolean `Underline`.
+    pub fn engine_underline(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+}
+
+/// Strikethrough style of a run (`Txt2` `/6/15`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Strikethrough {
+    /// `0`: none.
+    Off,
+    /// `2`: a strike box (`out/verify/strike_res.psd` keeps `2`).
+    StrikeBox,
+}
+
+impl Strikethrough {
+    pub fn code(self) -> i64 {
+        match self {
+            Self::Off => 0,
+            Self::StrikeBox => 2,
+        }
+    }
+
+    pub fn from_code(code: i64) -> Option<Self> {
+        Some(match code {
+            0 => Self::Off,
+            2 => Self::StrikeBox,
+            _ => return None,
+        })
+    }
+
+    /// `EngineData` only has a boolean `Strikethrough`.
+    pub fn engine_strikethrough(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+}
+
+/// The `/6/30` value Photoshop keeps for old-style figures switched on, as
+/// measured in `out/verify/oldstyle.psd`. There is no `EngineData` key for this
+/// flag, so it reaches `Txt2` only.
+pub const OLD_STYLE_ON: i64 = 2;
+
+/// Language codes measured in a Photoshop re-save. The block stores an integer
+/// index into Photoshop's language table; unknown values are still legal, so
+/// [`set_run_language_code`] accepts a raw code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Language {
+    /// `0`: Photoshop's default.
+    Default,
+    /// `14`: English (UK), measured in `out/verify/lang_res.psd`.
+    EnglishUk,
+    /// `42`: German, measured in the round-2 probe.
+    German,
+}
+
+impl Language {
+    pub fn code(self) -> i64 {
+        match self {
+            Self::Default => 0,
+            Self::EnglishUk => 14,
+            Self::German => 42,
+        }
+    }
+
+    pub fn from_code(code: i64) -> Option<Self> {
+        Some(match code {
+            0 => Self::Default,
+            14 => Self::EnglishUk,
+            42 => Self::German,
+            _ => return None,
+        })
     }
 }
 
@@ -868,8 +1761,223 @@ pub fn set_run_property(
     property: RunProperty,
     value: &Value,
 ) -> Result<Vec<u8>, Error> {
+    if property.is_paint() {
+        return Err(Error::Txt2(format!(
+            "/6/{} is a paint dictionary: use set_run_fill_color / set_run_stroke_color",
+            property.key()
+        )));
+    }
     let path = run_path(run, &[Step::Key("0"), Step::Key("0"), Step::Key("6"), Step::Key(property.key())]);
     replace_value(block, &path, value)
+}
+
+/// Reads one scalar character property of style run `run`.
+///
+/// `None` when the slot, the run or the block is absent; paint slots are read
+/// with [`run_fill_color`] / [`run_stroke_color`].
+pub fn run_property(block: &[u8], run: usize, property: RunProperty) -> Option<Value> {
+    if property.is_paint() {
+        return None;
+    }
+    let path = run_path(run, &[Step::Key("0"), Step::Key("0"), Step::Key("6"), Step::Key(property.key())]);
+    scalar_at(block, &path)
+}
+
+fn scalar_at(block: &[u8], path: &[Step<'_>]) -> Option<Value> {
+    let toks = tokens(block).ok()?;
+    let idx = resolve(&toks, path)?;
+    match &toks[idx].kind {
+        Kind::Int(i) => Some(Value::Int(*i)),
+        Kind::Real(r) => Some(Value::Real(*r)),
+        Kind::Bool(b) => Some(Value::Bool(*b)),
+        Kind::Name(n) => Some(Value::Name(n.clone())),
+        _ => None,
+    }
+}
+
+fn set_run_int(block: &[u8], run: usize, property: RunProperty, value: i64) -> Result<Vec<u8>, Error> {
+    set_run_ensured(block, run, property, &Value::Int(value))
+}
+
+fn set_run_bool(block: &[u8], run: usize, property: RunProperty, on: bool) -> Result<Vec<u8>, Error> {
+    set_run_ensured(block, run, property, &Value::Bool(on))
+}
+
+/// Replaces a slot, adding it when the template's sheet does not carry it.
+fn set_run_ensured(
+    block: &[u8],
+    run: usize,
+    property: RunProperty,
+    value: &Value,
+) -> Result<Vec<u8>, Error> {
+    let path = run_path(run, &[Step::Key("0"), Step::Key("0"), Step::Key("6"), Step::Key(property.key())]);
+    ensure_value(block, &path, value)
+}
+
+fn run_int(block: &[u8], run: usize, property: RunProperty) -> Option<i64> {
+    run_property(block, run, property).and_then(|v| match v {
+        Value::Int(i) => Some(i),
+        _ => None,
+    })
+}
+
+fn run_bool(block: &[u8], run: usize, property: RunProperty) -> Option<bool> {
+    run_property(block, run, property).and_then(|v| match v {
+        Value::Bool(b) => Some(b),
+        _ => None,
+    })
+}
+
+/// Faux bold of run `run` (`/6/2`).
+pub fn set_run_faux_bold(block: &[u8], run: usize, on: bool) -> Result<Vec<u8>, Error> {
+    set_run_bool(block, run, RunProperty::FauxBold, on)
+}
+
+pub fn run_faux_bold(block: &[u8], run: usize) -> Option<bool> {
+    run_bool(block, run, RunProperty::FauxBold)
+}
+
+/// Faux italic of run `run` (`/6/3`).
+pub fn set_run_faux_italic(block: &[u8], run: usize, on: bool) -> Result<Vec<u8>, Error> {
+    set_run_bool(block, run, RunProperty::FauxItalic, on)
+}
+
+pub fn run_faux_italic(block: &[u8], run: usize) -> Option<bool> {
+    run_bool(block, run, RunProperty::FauxItalic)
+}
+
+/// Kerning mode of run `run` (`/6/11`).
+pub fn set_run_kerning_type(block: &[u8], run: usize, kind: KerningType) -> Result<Vec<u8>, Error> {
+    set_run_int(block, run, RunProperty::KerningType, kind.code())
+}
+
+/// Same, from a stored code. Rejects codes Photoshop does not define, so a
+/// bogus value can never be written.
+pub fn set_run_kerning_type_code(block: &[u8], run: usize, code: i64) -> Result<Vec<u8>, Error> {
+    let kind = KerningType::from_code(code)
+        .ok_or_else(|| Error::Txt2(format!("not a kerning type: {code} (0 manual, 1 metrics, 2 optical)")))?;
+    set_run_kerning_type(block, run, kind)
+}
+
+pub fn run_kerning_type(block: &[u8], run: usize) -> Option<KerningType> {
+    run_int(block, run, RunProperty::KerningType).and_then(KerningType::from_code)
+}
+
+/// Case mapping of run `run` (`/6/12`).
+pub fn set_run_capitalization(
+    block: &[u8],
+    run: usize,
+    caps: Capitalization,
+) -> Result<Vec<u8>, Error> {
+    set_run_int(block, run, RunProperty::Capitalization, caps.code())
+}
+
+pub fn set_run_capitalization_code(block: &[u8], run: usize, code: i64) -> Result<Vec<u8>, Error> {
+    let caps = Capitalization::from_code(code)
+        .ok_or_else(|| Error::Txt2(format!("not a capitalization: {code} (0 normal, 1 small, 2 all)")))?;
+    set_run_capitalization(block, run, caps)
+}
+
+pub fn run_capitalization(block: &[u8], run: usize) -> Option<Capitalization> {
+    run_int(block, run, RunProperty::Capitalization).and_then(Capitalization::from_code)
+}
+
+/// Underline of run `run` (`/6/16`).
+pub fn set_run_underline(block: &[u8], run: usize, kind: Underline) -> Result<Vec<u8>, Error> {
+    set_run_int(block, run, RunProperty::Underline, kind.code())
+}
+
+pub fn set_run_underline_code(block: &[u8], run: usize, code: i64) -> Result<Vec<u8>, Error> {
+    let kind = Underline::from_code(code)
+        .ok_or_else(|| Error::Txt2(format!("not an underline kind: {code} (0 off, 1 right, 2 left)")))?;
+    set_run_underline(block, run, kind)
+}
+
+pub fn run_underline(block: &[u8], run: usize) -> Option<Underline> {
+    run_int(block, run, RunProperty::Underline).and_then(Underline::from_code)
+}
+
+/// Strikethrough of run `run` (`/6/15`).
+pub fn set_run_strikethrough(
+    block: &[u8],
+    run: usize,
+    kind: Strikethrough,
+) -> Result<Vec<u8>, Error> {
+    set_run_int(block, run, RunProperty::Strikethrough, kind.code())
+}
+
+pub fn set_run_strikethrough_code(block: &[u8], run: usize, code: i64) -> Result<Vec<u8>, Error> {
+    let kind = Strikethrough::from_code(code)
+        .ok_or_else(|| Error::Txt2(format!("not a strikethrough kind: {code} (0 off, 2 strike box)")))?;
+    set_run_strikethrough(block, run, kind)
+}
+
+pub fn run_strikethrough(block: &[u8], run: usize) -> Option<Strikethrough> {
+    run_int(block, run, RunProperty::Strikethrough).and_then(Strikethrough::from_code)
+}
+
+/// Standard ligatures of run `run` (`/6/18`).
+pub fn set_run_ligatures(block: &[u8], run: usize, on: bool) -> Result<Vec<u8>, Error> {
+    set_run_bool(block, run, RunProperty::Ligatures, on)
+}
+
+pub fn run_ligatures(block: &[u8], run: usize) -> Option<bool> {
+    run_bool(block, run, RunProperty::Ligatures)
+}
+
+/// Alternate (discretionary) ligatures of run `run` (`/6/19`).
+pub fn set_run_alternate_ligatures(block: &[u8], run: usize, on: bool) -> Result<Vec<u8>, Error> {
+    set_run_bool(block, run, RunProperty::AlternateLigatures, on)
+}
+
+pub fn run_alternate_ligatures(block: &[u8], run: usize) -> Option<bool> {
+    run_bool(block, run, RunProperty::AlternateLigatures)
+}
+
+/// Old-style figures of run `run` (`/6/30`); the measured "on" value is
+/// [`OLD_STYLE_ON`]. Rejects a negative level.
+pub fn set_run_old_style(block: &[u8], run: usize, level: i64) -> Result<Vec<u8>, Error> {
+    if level < 0 {
+        return Err(Error::Txt2(format!("not an old-style level: {level}")));
+    }
+    set_run_int(block, run, RunProperty::OldStyle, level)
+}
+
+pub fn run_old_style(block: &[u8], run: usize) -> Option<i64> {
+    run_int(block, run, RunProperty::OldStyle)
+}
+
+/// Language of run `run` (`/6/38`).
+pub fn set_run_language(block: &[u8], run: usize, language: Language) -> Result<Vec<u8>, Error> {
+    set_run_language_code(block, run, language.code())
+}
+
+/// Language by raw Photoshop code. Negative codes are refused; forward codes
+/// Photoshop may add later are accepted as-is.
+pub fn set_run_language_code(block: &[u8], run: usize, code: i64) -> Result<Vec<u8>, Error> {
+    if code < 0 {
+        return Err(Error::Txt2(format!("not a language code: {code}")));
+    }
+    set_run_int(block, run, RunProperty::Language, code)
+}
+
+/// The raw language code of run `run`.
+pub fn run_language_code(block: &[u8], run: usize) -> Option<i64> {
+    run_int(block, run, RunProperty::Language)
+}
+
+/// Language of run `run` when it is one of the measured codes.
+pub fn run_language(block: &[u8], run: usize) -> Option<Language> {
+    run_language_code(block, run).and_then(Language::from_code)
+}
+
+/// "No break" of run `run` (`/6/52`): keep it on one line.
+pub fn set_run_no_break(block: &[u8], run: usize, on: bool) -> Result<Vec<u8>, Error> {
+    set_run_bool(block, run, RunProperty::NoBreak, on)
+}
+
+pub fn run_no_break(block: &[u8], run: usize) -> Option<bool> {
+    run_bool(block, run, RunProperty::NoBreak)
 }
 
 fn font_set_path() -> Vec<Step<'static>> {
@@ -926,7 +2034,39 @@ pub fn set_run_font_index(block: &[u8], run: usize, index: usize) -> Result<Vec<
 /// Writes a run's fill colour as Photoshop's `SimplePaint` dictionary:
 /// `/53 << /99 /SimplePaint /0 << /0 1 /1 [ a r g b ] >> >>` (alpha first).
 pub fn set_run_fill_color(block: &[u8], run: usize, rgba: [f32; 4]) -> Result<Vec<u8>, Error> {
-    let path = run_path(run, &[Step::Key("0"), Step::Key("0"), Step::Key("6"), Step::Key("53")]);
+    set_run_paint(block, run, RunProperty::FillPaint, rgba)
+}
+
+/// Reads a run's fill colour, if it carries one.
+pub fn run_fill_color(block: &[u8], run: usize) -> Option<[f32; 4]> {
+    run_paint(block, run, RunProperty::FillPaint)
+}
+
+/// Writes a run's stroke colour in the same `SimplePaint` shape at `/54`
+/// (`out/probe2/base.psd`: `/54 << /99 /SimplePaint /0 << /0 1 /1 [ 1.0 0.0
+/// 0.0 0.0 ] >> >>`).
+pub fn set_run_stroke_color(block: &[u8], run: usize, rgba: [f32; 4]) -> Result<Vec<u8>, Error> {
+    set_run_paint(block, run, RunProperty::StrokePaint, rgba)
+}
+
+/// Reads a run's stroke colour, if it carries one.
+pub fn run_stroke_color(block: &[u8], run: usize) -> Option<[f32; 4]> {
+    run_paint(block, run, RunProperty::StrokePaint)
+}
+
+fn paint_path(run: usize, property: RunProperty) -> Vec<Step<'static>> {
+    run_path(
+        run,
+        &[Step::Key("0"), Step::Key("0"), Step::Key("6"), Step::Key(property.key())],
+    )
+}
+
+fn set_run_paint(
+    block: &[u8],
+    run: usize,
+    property: RunProperty,
+    rgba: [f32; 4],
+) -> Result<Vec<u8>, Error> {
     let value = format!(
         "<< /99 /SimplePaint /0 << /0 1 /1 [ {} {} {} {} ] >> >>",
         format_real(f64::from(rgba[0])),
@@ -934,13 +2074,11 @@ pub fn set_run_fill_color(block: &[u8], run: usize, rgba: [f32; 4]) -> Result<Ve
         format_real(f64::from(rgba[2])),
         format_real(f64::from(rgba[3])),
     );
-    replace_container(block, &path, value.as_bytes())
+    ensure_container(block, &paint_path(run, property), value.as_bytes())
 }
 
-/// Reads a run's fill colour, if it carries one.
-pub fn run_fill_color(block: &[u8], run: usize) -> Option<[f32; 4]> {
-    let path = run_path(run, &[Step::Key("0"), Step::Key("0"), Step::Key("6"), Step::Key("53")]);
-    let (s, e) = value_span(&tokens(block).ok()?, &path)?;
+fn run_paint(block: &[u8], run: usize, property: RunProperty) -> Option<[f32; 4]> {
+    let (s, e) = value_span(&tokens(block).ok()?, &paint_path(run, property))?;
     let text = std::str::from_utf8(&block[s..e]).ok()?;
     let at = text.find("/1 [")? + 4;
     let body = text[at..].split(']').next()?;

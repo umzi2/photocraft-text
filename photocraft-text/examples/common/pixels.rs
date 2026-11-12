@@ -19,6 +19,13 @@ pub fn refresh_text_layer(file: &mut PsdFile, text: &str) -> Result<(), Box<dyn 
     if let Some(dir) = fonts {
         store.load_dir(&dir);
     }
+    // Extra directories for fonts Photoshop ships outside the Wine font dir
+    // (CJK faces live in `Required/PDFL/Resource/Fonts`), colon-separated.
+    if let Some(list) = std::env::var_os("PHOTOCRAFT_FONT_DIRS") {
+        for dir in std::env::split_paths(&list) {
+            store.load_dir(&dir);
+        }
+    }
     if let Some(atlas) = std::env::var_os("PHOTOCRAFT_ATLAS") {
         store.set_atlas(
             photocraft_text::atlas::Atlas::load(std::path::Path::new(&atlas))

@@ -259,15 +259,26 @@ impl FaceStore {
         self.entries
             .iter()
             .find(|(n, _, _)| n == name)
+            .or_else(|| {
+                // Photoshop's `Txt2`/`EngineData` store PostScript names
+                // (`CCGrimNGritty-Regular`) while installed files are named
+                // with spaces (`CCGrimNGritty Regular.otf`). Fall back to a
+                // separator-insensitive match so non-standard fonts resolve.
+                let key = font_key(name);
+                self.entries.iter().find(|(n, _, _)| font_key(n) == key)
+            })
             .map(|(_, b, _)| b.as_slice())
     }
 
     /// Builds a `FontSet` whose default face is the first name that loads.
     /// Panics never: an empty store is an error.
     fn font_set(&self, wanted: &[String]) -> Result<FontSet<'_>, Error> {
-        let first = wanted.iter().find(|n| self.bytes(n).is_some()).ok_or(Error::BadFont(
-            "no run font available in the store",
-        ))?;
+        let fallback = self.first_usable_name();
+        let first = wanted
+            .iter()
+            .find(|n| self.bytes(n).is_some())
+            .or(fallback.as_ref())
+            .ok_or(Error::BadFont("no run font available in the store"))?;
         let mut set = FontSet::new(first.as_str(), Face::parse(self.bytes(first).ok_or(
             Error::BadFont("font vanished from the store"),
         )?)?);
@@ -722,4 +733,14 @@ fn paint(
         min_y as f32 - margin as f32 + first_baseline,
     );
     Ok(LayerPixels { width: out_w, height: out_h, rgba, offset })
+}
+
+
+/// Separator-insensitive font-name key (`CCGrimNGritty-Regular` ==
+/// `CCGrimNGritty Regular`), lowercased, alphanumerics only.
+fn font_key(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
 }

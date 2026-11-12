@@ -68,6 +68,8 @@ fn fixtures() -> Vec<PathBuf> {
             let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
             (p.extension().and_then(|e| e.to_str()) == Some("json")
                 && name != "font_ascent.json"
+                // CFF outline fixtures are not Photoshop PDF layouts.
+                && name != "cff_bbox.json"
                 // Composer fixtures carry line breaks instead of glyph positions.
                 && !name.starts_with("composer_"))
             .then_some(p)

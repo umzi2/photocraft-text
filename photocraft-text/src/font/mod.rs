@@ -3,6 +3,7 @@
 //! Parsing is done by hand so the behaviour is fully controlled: every value the
 //! layout engine uses comes from an explicit table read here.
 
+pub mod cff;
 pub mod cmap;
 pub mod gpos;
 pub mod gsub;
@@ -69,6 +70,7 @@ pub struct Face<'a> {
     num_glyphs: u16,
     pub kern: kern::Kern<'a>,
     pub gpos: Option<gpos::Gpos<'a>>,
+    cff: Option<cff::Cff<'a>>,
 }
 
 impl<'a> Face<'a> {
@@ -157,6 +159,8 @@ impl<'a> Face<'a> {
         let os2 = table(TAG_OS2).map(parse_os2);
         let kern = table(TAG_KERN).map(|d| kern::Kern::parse(d)).transpose()?.unwrap_or_default();
         let gpos = table(TAG_GPOS).map(|d| gpos::Gpos::parse(d)).transpose()?;
+        // `OTTO` faces carry `CFF ` instead of `glyf`; CFF2 is not supported.
+        let cff = table(*b"CFF ").map(|d| cff::Cff::parse(d, units_per_em)).transpose()?;
 
         Ok(Self {
             data,
@@ -170,7 +174,51 @@ impl<'a> Face<'a> {
             num_glyphs,
             kern,
             gpos,
+            cff,
         })
+    }
+
+    /// True when the face has TrueType `glyf` outlines.
+    pub fn has_glyf(&self) -> bool {
+        self.tables.iter().any(|(tag, _, _)| *tag == *b"glyf")
+    }
+
+    /// True when the face has a parsed CFF table.
+    pub fn has_cff(&self) -> bool {
+        self.cff.is_some()
+    }
+
+    /// The parsed `CFF ` table, if the face has one.
+    pub fn cff(&self) -> Option<&cff::Cff<'a>> {
+        self.cff.as_ref()
+    }
+
+    /// Ink bounding box of `gid` in font units, y up, as
+    /// `(x_min, y_min, x_max, y_max)`.
+    ///
+    /// Follows the drawn curve: composite `glyf` components are expanded and
+    /// quadratic/cubic extrema are solved, so the result is the true outline
+    /// bound rather than the `glyf` header or control-point hull.
+    pub fn glyph_bbox(&self, gid: u16) -> Option<(f32, f32, f32, f32)> {
+        crate::outline::glyph_bbox(self, gid).ok().flatten()
+    }
+
+    /// Photoshop's area-text first-baseline ratio: the ink `yMax` of U+0064
+    /// `d` divided by `unitsPerEm`.
+    ///
+    /// Falls back to 'b', 'h', 'H' when a face has no `d` (symbol fonts) and
+    /// finally to `hhea.ascender / unitsPerEm`.
+    pub fn ascent_ratio(&self) -> f32 {
+        let upm = self.head.units_per_em as f32;
+        for ch in ['d', 'b', 'h', 'H'] {
+            let Some(gid) = self.glyph_index(ch) else { continue };
+            let Some((_, _, _, y_max)) = self.glyph_bbox(gid) else { continue };
+            let ratio = y_max / upm;
+            if ratio.is_finite() && ratio > 0.0 {
+                return ratio;
+            }
+        }
+        self.hhea.ascender as f32 / upm
     }
 
     fn read_hmtx(data: &[u8], num_h_metrics: u16, num_glyphs: u16) -> Result<(Vec<u16>, Vec<i16>)> {
