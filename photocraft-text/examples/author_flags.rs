@@ -29,12 +29,11 @@
 //! same model. Slots whose encoding is still unmeasured are not accepted:
 //! manual kerning amounts, space before/after.
 
-#[path = "common/author.rs"]
-mod common_author;
-
 use std::collections::BTreeMap;
 
-use common_author::{LayerSpec, ParagraphSpec, RunSpec as AuthorRun, author};
+use photocraft_text::psd::{
+    LayerSpec, ParagraphSpec, RunSpec as AuthorRun, author, refresh_text_layer, with_engine_data,
+};
 use photocraft_psd::PsdFile;
 use photocraft_text::runs::{self, ParagraphFormat, ParagraphRun, RunStyle};
 use photocraft_text::txt2::{
@@ -42,8 +41,8 @@ use photocraft_text::txt2::{
     RunProperty, Strikethrough, Underline,
 };
 
-#[path = "common/pixels.rs"]
-mod pixels;
+#[path = "common/fonts.rs"]
+mod fonts;
 
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 struct Spec {
@@ -198,6 +197,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if covered != units {
         return Err(format!("runs cover {covered} units, text + terminator is {units}").into());
     }
+    let store = fonts::load()?;
 
     // Base authoring: text, run table, basic paragraph formatting, EngineData,
     // pixels. The measured flags are applied on top of it below.
@@ -212,6 +212,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             atlas: None,
             fractional: None,
         },
+        &store,
     )?;
 
     // 1. `Txt2`: every measured run slot, then the paragraph blocks.
@@ -362,7 +363,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .find(|b| &b.key == b"TySh")
         .ok_or("no TySh block")?;
     let formats = vec![format; paragraphs.len()];
-    tysh.data = pixels::with_engine_data(&tysh.data, |ed| {
+    tysh.data = with_engine_data(&tysh.data, |ed| {
         let mut styles = styles.clone();
         for (i, run) in runs.iter().enumerate() {
             if let Some(name) = &run.font {
@@ -382,7 +383,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tysh.padding = None;
 
     // 3. The stored pixels, from the model just written.
-    pixels::refresh_text_layer(&mut file, &normalized)?;
+    refresh_text_layer(&mut file, &normalized, &store)?;
     let bytes = file.to_bytes()?;
     if std::env::var("PHOTOCRAFT_TRACE").is_ok() {
         let t2 = bytes.windows(4).position(|w| w == b"Txt2").unwrap_or(0);

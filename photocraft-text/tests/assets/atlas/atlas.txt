@@ -1,0 +1,28 @@
+font NotoSans-Regular
+size 48.0
+aa 4
+pen_x 40.0
+baseline_y 120.0
+bin atlas.bin
+glyph 0048 4 -34 27 34 0 H
+glyph 0061 2 -26 21 26 918 a
+glyph 006D 4 -26 37 26 1464 m
+glyph 0062 4 -36 23 36 2426 b
+glyph 0075 3 -26 23 26 3254 u
+glyph 0072 4 -26 16 26 3852 r
+glyph 0067 2 -26 24 37 4268 g
+glyph 0065 2 -26 23 26 5156 e
+glyph 0066 0 -37 19 37 5754 f
+glyph 006F 2 -26 25 26 6457 o
+glyph 006E 4 -26 22 26 7107 n
+glyph 0073 2 -26 19 26 7679 s
+glyph 0074 0 -32 17 32 8173 t
+glyph 0069 3 -35 6 35 8717 i
+glyph 0076 0 -26 25 26 8927 v
+glyph 0020 0 0 0 0 9577
+glyph 0041 0 -34 31 34 9577 A
+glyph 0056 0 -34 29 34 10631 V
+glyph 0054 0 -34 27 34 11617 T
+glyph 0052 4 -34 26 34 12535 R
+glyph 0079 0 -26 25 37 13419 y
+glyph 002E 3 -6 7 6 14344 .

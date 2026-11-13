@@ -3,10 +3,8 @@
 
 use std::path::PathBuf;
 
-#[path = "../examples/common/author.rs"]
-mod common_author;
-
-use common_author::{LayerSpec, ParagraphSpec, RunSpec, author};
+use photocraft_text::layer_render::FaceStore;
+use photocraft_text::psd::{Error, LayerSpec, ParagraphSpec, RunSpec, author, refresh_text_layer};
 
 #[test]
 fn flags_reach_engine_data() {
@@ -27,7 +25,7 @@ fn flags_reach_engine_data() {
         atlas: None,
         fractional: None,
     };
-    author(&mut file, &spec).unwrap();
+    author(&mut file, &spec, &store()).unwrap();
     let tysh = file
         .layers()
         .iter()
@@ -52,13 +50,25 @@ fn flags_reach_engine_data() {
 }
 
 fn template() -> PathBuf {
-    PathBuf::from("../corpus/plain_latin.psd")
+    assets().join("inputs/plain_latin.bin")
 }
 
 /// Area text needs a document whose `Txt2` carries a frame rectangle; a point
 /// document has none, so the frame cannot be added to it.
 fn area_template() -> PathBuf {
-    PathBuf::from("../corpus/box_left.psd")
+    assets().join("inputs/box_left.bin")
+}
+
+fn assets() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets")
+}
+
+fn store() -> FaceStore {
+    let mut store = FaceStore::new();
+    for name in ["NotoSans-Regular", "NotoSans-Bold"] {
+        store.load(&assets().join("fonts"), name).expect("fixture font");
+    }
+    store
 }
 
 #[test]
@@ -88,7 +98,7 @@ fn export_writes_text_runs_paragraphs_and_pixels() {
         atlas: None,
         fractional: None,
     };
-    author(&mut file, &spec).expect("author");
+    author(&mut file, &spec, &store()).expect("author");
 
     let txt2 = file
         .global_blocks
@@ -190,7 +200,7 @@ fn area_frame_and_paragraph_leading_reach_txt2() {
         atlas: None,
         fractional: None,
     };
-    author(&mut file, &spec).expect("author");
+    author(&mut file, &spec, &store()).expect("author");
     let txt2 = file
         .global_blocks
         .iter()
@@ -240,4 +250,108 @@ fn area_frame_and_paragraph_leading_reach_txt2() {
         "centred ink starts at {}",
         layer.rect.left
     );
+}
+
+#[test]
+fn invalid_runs_leave_the_psd_unchanged() {
+    let input = std::fs::read(template()).expect("fixture PSD");
+    for (lengths, expected) in [
+        (vec![], "empty"),
+        (vec![0, 5], "zero"),
+        (vec![usize::MAX, 1], "overflow"),
+        (vec![i64::MAX as usize, i64::MAX as usize, 2], "overflow"),
+        (vec![2, 3], "surrogate"),
+        (vec![4], "coverage"),
+    ] {
+        let mut file = photocraft_psd::PsdFile::from_bytes(&input).unwrap();
+        let before = file.to_bytes().unwrap();
+        let spec = LayerSpec {
+            text: "A😀B".into(),
+            runs: lengths
+                .into_iter()
+                .map(|len| RunSpec { len, ..Default::default() })
+                .collect(),
+            paragraph: Default::default(),
+            aa: None,
+            frame: None,
+            atlas: None,
+            fractional: None,
+        };
+        let error = author(&mut file, &spec, &FaceStore::new()).unwrap_err();
+        match expected {
+            "empty" => assert!(matches!(error, Error::NoRuns)),
+            "zero" => assert!(matches!(error, Error::ZeroLengthRun { index: 0 })),
+            "overflow" => assert!(matches!(error, Error::RunLengthOverflow)),
+            "surrogate" => assert!(matches!(error, Error::SurrogateSplit { index: 0, offset: 2 })),
+            "coverage" => assert!(matches!(error, Error::RunCoverage { covered: 4, expected: 5 })),
+            _ => unreachable!(),
+        }
+        assert_eq!(file.to_bytes().unwrap(), before);
+    }
+}
+
+#[test]
+fn malformed_tysh_does_not_commit_txt2_edits() {
+    let input = std::fs::read(template()).expect("fixture PSD");
+    let mut file = photocraft_psd::PsdFile::from_bytes(&input).unwrap();
+    let layer = file.layers_mut().iter_mut().find(|l| l.block(b"TySh").is_some()).unwrap();
+    layer.blocks.iter_mut().find(|b| &b.key == b"TySh").unwrap().data.clear();
+    let before = file.to_bytes().unwrap();
+    let spec = LayerSpec {
+        text: "Hi".into(),
+        runs: vec![RunSpec { len: 3, ..Default::default() }],
+        paragraph: Default::default(),
+        aa: None,
+        frame: None,
+        atlas: None,
+        fractional: None,
+    };
+    assert!(matches!(
+        author(&mut file, &spec, &FaceStore::new()),
+        Err(Error::TruncatedTySh { .. })
+    ));
+    assert!(matches!(
+        refresh_text_layer(&mut file, "Hi", &FaceStore::new()),
+        Err(Error::TruncatedTySh { .. })
+    ));
+    assert_eq!(file.to_bytes().unwrap(), before);
+}
+
+#[test]
+fn unavailable_named_font_does_not_commit_authoring() {
+    let input = std::fs::read(template()).expect("fixture PSD");
+    let mut file = photocraft_psd::PsdFile::from_bytes(&input).unwrap();
+    let before = file.to_bytes().unwrap();
+    let spec: LayerSpec = serde_json::from_str(
+        r#"{"text":"Hi","runs":[{"len":3,"font":"UnavailableFont-Regular"}]}"#,
+    )
+    .unwrap();
+    let error = author(&mut file, &spec, &FaceStore::new()).unwrap_err();
+    assert!(matches!(
+        error,
+        Error::Text(photocraft_text::Error::BadFont(_))
+    ));
+    assert!(std::error::Error::source(&error).is_some());
+    assert_eq!(file.to_bytes().unwrap(), before);
+}
+
+#[test]
+fn pixel_encoding_errors_leave_authoring_and_refresh_unchanged() {
+    let input = std::fs::read(template()).expect("fixture PSD");
+    let mut file = photocraft_psd::PsdFile::from_bytes(&input).unwrap();
+    // RGBA is 8-bit; a 16-bit plane requires twice as many bytes.
+    file.header.depth = 16;
+    let before = file.to_bytes().unwrap();
+    let fonts = store();
+    assert!(matches!(
+        refresh_text_layer(&mut file, "Hi", &fonts),
+        Err(Error::Psd(_))
+    ));
+    assert_eq!(file.to_bytes().unwrap(), before);
+    let spec: LayerSpec = serde_json::from_str(
+        r#"{"text":"Hi","runs":[{"len":3,"font":"NotoSans-Regular"}]}"#,
+    )
+    .unwrap();
+    assert!(matches!(author(&mut file, &spec, &fonts), Err(Error::Psd(_))));
+    assert_eq!(file.to_bytes().unwrap(), before);
 }

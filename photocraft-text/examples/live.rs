@@ -15,10 +15,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use photocraft_text::layer_render::{FaceStore, LayerTextStyle, RenderOptions};
+use photocraft_text::psd::{self, LayerSpec, RunSpec};
 use photocraft_text::runs::RunStyle;
-
-#[path = "common/author.rs"]
-mod common_author;
 
 const PAGE: &str = include_str!("live.html");
 
@@ -113,7 +111,7 @@ fn default_area_template() -> Option<PathBuf> {
 
 /// The template for this export: area text needs the frame-carrying document.
 fn export_template<'a>(templates: &'a Templates, body: &[u8]) -> Option<&'a Path> {
-    let spec: common_author::LayerSpec = serde_json::from_slice(body).ok()?;
+    let spec: LayerSpec = serde_json::from_slice(body).ok()?;
     if spec.frame.is_some() {
         templates.area.as_deref()
     } else {
@@ -204,7 +202,7 @@ fn serve(
                 b"no psd template for this text kind; pass one as the fourth argument",
             );
         };
-        return match export_psd(template, &body) {
+        return match export_psd(store, template, &body) {
             Ok(psd) => respond_psd(&mut stream, "text.psd", &psd),
             Err(e) => respond(
                 &mut stream,
@@ -335,7 +333,7 @@ fn decode(s: &str) -> String {
 ///             { "len": 5, "size": 48 } ] }
 /// ```
 fn render_json(store: &FaceStore, body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let spec: common_author::LayerSpec = serde_json::from_slice(body)?;
+    let spec: LayerSpec = serde_json::from_slice(body)?;
     let text = spec.text.as_str();
     let total = text.encode_utf16().count();
     let mut runs: Vec<RunStyle> = spec
@@ -416,7 +414,7 @@ fn render_json(store: &FaceStore, body: &[u8]) -> Result<Vec<u8>, Box<dyn std::e
     Ok(encode_png(&pixels.rgba, pixels.width, pixels.height))
 }
 
-fn run_style_of(run: &common_author::RunSpec) -> RunStyle {
+fn run_style_of(run: &RunSpec) -> RunStyle {
     RunStyle {
         len: run.len,
         font: run.font.clone(),
@@ -445,8 +443,12 @@ fn run_style_of(run: &common_author::RunSpec) -> RunStyle {
 /// The style-run table Photoshop reads must cover the text *plus* its trailing
 /// U+000D terminator, which the editor's lengths (plain text units) do not, so
 /// the terminator is added to the last run here.
-fn export_psd(template: &Path, body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let mut spec: common_author::LayerSpec = serde_json::from_slice(body)?;
+fn export_psd(
+    store: &FaceStore,
+    template: &Path,
+    body: &[u8],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut spec: LayerSpec = serde_json::from_slice(body)?;
     let total = spec
         .text
         .replace("\r\n", "\r")
@@ -457,19 +459,21 @@ fn export_psd(template: &Path, body: &[u8]) -> Result<Vec<u8>, Box<dyn std::erro
     if total == 0 {
         return Err("empty text".into());
     }
-    let covered: usize = spec.runs.iter().map(|r| r.len).sum();
+    let covered = spec.runs.iter().try_fold(0usize, |total, run| {
+        total.checked_add(run.len).ok_or("run lengths overflow")
+    })?;
     if covered < total {
         let mut filler = spec.runs.last().cloned().unwrap_or_default();
         filler.len = total - covered;
         spec.runs.push(filler);
     }
     match spec.runs.last_mut() {
-        Some(last) => last.len += 1,
+        Some(last) => last.len = last.len.checked_add(1).ok_or("run lengths overflow")?,
         None => return Err("no runs".into()),
     }
     let bytes = std::fs::read(template)?;
     let mut file = photocraft_psd::PsdFile::from_bytes(&bytes)?;
-    common_author::author(&mut file, &spec)?;
+    psd::author(&mut file, &spec, store)?;
     Ok(file.to_bytes()?)
 }
 
@@ -604,4 +608,53 @@ fn read_body(stream: &mut std::net::TcpStream) -> std::io::Result<String> {
     let mut buf = String::new();
     stream.read_to_string(&mut buf)?;
     Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FaceStore, Path, export_psd};
+
+    #[test]
+    fn export_uses_the_preview_store_and_adds_one_terminator() {
+        let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/assets");
+        let mut store = FaceStore::new();
+        store.load(&assets.join("fonts"), "NotoSans-Regular").unwrap();
+        let bytes = export_psd(
+            &store,
+            &assets.join("inputs/plain_latin.bin"),
+            br#"{"text":"Hi\nall","runs":[{"len":2,"font":"NotoSans-Regular"},{"len":4}]}"#,
+        )
+        .unwrap();
+        let file = photocraft_psd::PsdFile::from_bytes(&bytes).unwrap();
+        let tysh = file.layers().iter().find_map(|layer| layer.block(b"TySh")).unwrap();
+        let (descriptor, _) =
+            photocraft_psd::descriptor::VersionedDescriptor::parse_prefix(&tysh.data[52..]).unwrap();
+        let Some(photocraft_psd::descriptor::Value::RawData(raw)) =
+            descriptor.descriptor.get("EngineData")
+        else {
+            panic!("missing EngineData")
+        };
+        let ed = photocraft_text::engine_data::parse(raw).unwrap();
+        assert_eq!(
+            photocraft_text::runs::from_engine_data(&ed)
+                .iter()
+                .map(|run| run.len)
+                .collect::<Vec<_>>(),
+            [2, 5]
+        );
+        assert_eq!(
+            photocraft_text::txt2::read_text(&file.global_block(b"Txt2").unwrap().data).unwrap(),
+            "Hi\rall"
+        );
+    }
+
+    #[test]
+    fn export_rejects_run_length_overflow_before_reading_the_template() {
+        let body = format!(
+            r#"{{"text":"Hi","runs":[{{"len":{}}},{{"len":1}}]}}"#,
+            usize::MAX
+        );
+        let error = export_psd(&FaceStore::new(), Path::new("unused"), body.as_bytes()).unwrap_err();
+        assert_eq!(error.to_string(), "run lengths overflow");
+    }
 }

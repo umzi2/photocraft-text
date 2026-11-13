@@ -16,6 +16,7 @@ pub mod layer_render;
 pub mod layout;
 pub mod optical;
 pub mod outline;
+pub mod psd;
 pub mod raster;
 pub mod runs;
 pub mod txt2;

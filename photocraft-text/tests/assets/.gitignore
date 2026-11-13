@@ -1,0 +1,2 @@
+# Regression inputs and goldens must not be hidden by global extension ignores.
+!*

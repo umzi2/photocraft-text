@@ -11,10 +11,10 @@
 //! prerendered pixels are re-rasterised from that split so the stored copy
 //! matches what Photoshop draws.
 
-#[path = "common/author.rs"]
-mod common_author;
+#[path = "common/fonts.rs"]
+mod fonts;
 
-use common_author::{LayerSpec, RunSpec, author};
+use photocraft_text::psd::{LayerSpec, RunSpec, author};
 use photocraft_psd::PsdFile;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,6 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .data,
     )
     .ok_or("no text")?;
+    let store = fonts::load()?;
     author(
         &mut file,
         &LayerSpec {
@@ -41,6 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             atlas: None,
             fractional: None,
         },
+        &store,
     )?;
     std::fs::write(&a[2], file.to_bytes()?)?;
     println!(

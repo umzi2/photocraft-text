@@ -1,0 +1,58 @@
+[
+  {
+    "name": "point_plain",
+    "template": "plain_latin.bin",
+    "spec": {
+      "text": "Hamburgefonstiv AVTRy.",
+      "runs": [{"len": 23, "font": "NotoSans-Regular", "size": 48, "color": [25, 70, 130]}],
+      "aa": 4,
+      "fractional": true
+    }
+  },
+  {
+    "name": "point_styles",
+    "template": "plain_latin.bin",
+    "spec": {
+      "text": "Red Bold\nSmall caps",
+      "runs": [
+        {"len": 4, "font": "NotoSans-Regular", "size": 48, "color": [220, 30, 15], "tracking": 125, "horizontal_scale": 1.25, "vertical_scale": 0.85, "underline": true},
+        {"len": 5, "font": "NotoSans-Bold", "size": 36, "color": [10, 45, 230], "baseline_shift": 4.5, "all_caps": true, "strikethrough": true},
+        {"len": 11, "font": "NotoSans-Regular", "size": 30, "color": [25, 160, 60], "small_caps": true, "bold": true, "italic": true, "underline": true, "strikethrough": true, "leading": 45}
+      ],
+      "aa": 1,
+      "fractional": false
+    }
+  },
+  {
+    "name": "point_center",
+    "template": "plain_latin.bin",
+    "spec": {
+      "text": "AVATAR\rTy",
+      "runs": [{"len": 10, "font": "NotoSans-Regular", "size": 24, "tracking": -35, "auto_kerning": false, "kerning": 80, "leading": 38}],
+      "paragraph": {"justification": 2},
+      "aa": 0
+    }
+  },
+  {
+    "name": "area_paragraphs",
+    "template": "box_left.bin",
+    "spec": {
+      "text": "Hamburg AVATAR wraps over several words.\rSecond paragraph.",
+      "runs": [{"len": 59, "font": "NotoSans-Regular", "size": 24, "tracking": 50, "leading": 32, "color": [110, 40, 150]}],
+      "paragraph": {"justification": 2, "first_line_indent": 9, "start_indent": 7, "end_indent": 11, "space_before": 6, "space_after": 8, "auto_leading": 1.4},
+      "frame": [20, 30, 270, 230],
+      "aa": 4
+    }
+  },
+  {
+    "name": "area_composer",
+    "template": "box_left.bin",
+    "spec": {
+      "text": "Hamburg AVATAR wraps over several words and lines.",
+      "runs": [{"len": 51, "font": "NotoSans-Bold", "size": 22, "horizontal_scale": 0.9, "vertical_scale": 1.1}],
+      "paragraph": {"justification": 5, "every_line_composer": true, "word_spacing": [0.7, 1.0, 1.5], "letter_spacing": [-0.02, 0.0, 0.1], "glyph_scaling": [0.9, 1.0, 1.1]},
+      "frame": [15, 25, 265, 225],
+      "aa": 3
+    }
+  }
+]

@@ -8,9 +8,10 @@
 use photocraft_psd::PsdFile;
 use photocraft_psd::descriptor::{UnicodeString, Value as DescValue, VersionedDescriptor};
 use photocraft_text::engine_data::{self, Value};
+use photocraft_text::psd::refresh_text_layer;
 
-#[path = "common/pixels.rs"]
-mod pixels;
+#[path = "common/fonts.rs"]
+mod fonts;
 
 /// Replace the first occurrence of `open..close` with `open + value + close`.
 fn replace_between(src: &str, open: &str, close: &str, value: &str) -> String {
@@ -144,7 +145,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    pixels::refresh_text_layer(&mut file, &new_text)?;
+    let store = fonts::load()?;
+    refresh_text_layer(&mut file, &new_text, &store)?;
 
     std::fs::write(&args[2], file.to_bytes()?)?;
     println!(

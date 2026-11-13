@@ -1,0 +1,8 @@
+# Synthetic nominal and substituted cells for selector contracts.
+font NotoSans-Regular
+size 48
+aa 4
+hscale 1
+bin atlas.bin
+glyph 0041 0 -1 1 1 0
+glyph 0041 7 -1 1 1 1 gid=FFFF
