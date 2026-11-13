@@ -4,13 +4,14 @@
 //! layer and doubled its line gap).
 
 use photocraft_text::engine_data::Value;
-use photocraft_text::layer_render::{render_from_engine_data, FaceStore};
-use photocraft_text::runs::{to_engine_data, RunStyle};
+use photocraft_text::layer_render::{FaceStore, render_from_engine_data};
+use photocraft_text::runs::{RunStyle, to_engine_data};
 
 fn store() -> FaceStore {
     let mut store = FaceStore::new();
-    let dir = std::env::var_os("HOME")
-        .map(|h| std::path::PathBuf::from(h).join(".local/share/photocraft/wine/drive_c/windows/Fonts"));
+    let dir = std::env::var_os("HOME").map(|h| {
+        std::path::PathBuf::from(h).join(".local/share/photocraft/wine/drive_c/windows/Fonts")
+    });
     if let Some(dir) = dir {
         store.load_dir(&dir);
     }
@@ -21,7 +22,10 @@ fn engine_data(runs: Vec<RunStyle>, text: &str) -> Value {
     let covered: usize = runs.iter().map(|r| r.len).sum();
     assert_eq!(covered, text.encode_utf16().count());
     Value::dict([
-        ("EngineDict", Value::dict([("StyleRun", to_engine_data(&runs))])),
+        (
+            "EngineDict",
+            Value::dict([("StyleRun", to_engine_data(&runs))]),
+        ),
         (
             "ResourceDict",
             Value::dict([(
@@ -55,7 +59,13 @@ fn bands(p: &photocraft_text::layer_render::LayerPixels) -> Vec<(u32, u32)> {
 #[test]
 fn two_lines_step_by_the_authored_leading() {
     let text = "Hamburg\rHamburg";
-    let runs = vec![RunStyle { len: 15, size: Some(48.0), leading: Some(100.0), auto_leading: Some(false), ..RunStyle::default() }];
+    let runs = vec![RunStyle {
+        len: 15,
+        size: Some(48.0),
+        leading: Some(100.0),
+        auto_leading: Some(false),
+        ..RunStyle::default()
+    }];
     let ed = engine_data(runs.clone(), text);
     let px = render_from_engine_data(&store(), &ed, text, (0.0, 0.0), (0.0, 0.0)).expect("render");
     let bands = bands(&px);
@@ -65,12 +75,20 @@ fn two_lines_step_by_the_authored_leading() {
     // One step plus the ink of a single line: a double-counted baseline would
     // add another 100.
     let height = px.height as i32;
-    assert!(height < 190, "layer is {height} px tall, the baseline was double-counted");
+    assert!(
+        height < 190,
+        "layer is {height} px tall, the baseline was double-counted"
+    );
 }
 
 #[test]
 fn explicit_leading_disables_auto_leading_in_engine_data() {
-    let runs = vec![RunStyle { len: 2, size: Some(48.0), leading: Some(100.0), ..RunStyle::default() }];
+    let runs = vec![RunStyle {
+        len: 2,
+        size: Some(48.0),
+        leading: Some(100.0),
+        ..RunStyle::default()
+    }];
     let value = to_engine_data(&runs);
     // Photoshop (and our own prerender) resolve a missing AutoLeading to
     // 1.2 x size, so an explicit leading has to switch it off.
@@ -81,12 +99,16 @@ fn explicit_leading_disables_auto_leading_in_engine_data() {
         .and_then(|run| run.get("StyleSheet"))
         .and_then(|sheet| sheet.get("StyleSheetData"))
         .expect("run 0 style sheet");
-    assert_eq!(sheet.get("AutoLeading").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        sheet.get("AutoLeading").and_then(Value::as_bool),
+        Some(false)
+    );
     assert_eq!(sheet.get("Leading").and_then(Value::as_f32), Some(100.0));
     // The same values must survive the round trip the renderer uses.
-    let back = photocraft_text::runs::from_engine_data(&Value::dict([
-        ("EngineDict", Value::dict([("StyleRun", value.clone())])),
-    ]));
+    let back = photocraft_text::runs::from_engine_data(&Value::dict([(
+        "EngineDict",
+        Value::dict([("StyleRun", value.clone())]),
+    )]));
     assert_eq!(back[0].leading, Some(100.0));
     assert_eq!(back[0].auto_leading_flag(), Some(false));
 }

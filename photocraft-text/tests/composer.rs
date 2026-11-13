@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use photocraft_text::area::{layout_area, Justification, ParagraphStyle};
+use photocraft_text::area::{Justification, ParagraphStyle, layout_area};
 use photocraft_text::font::Face;
 use photocraft_text::layout::TextStyle;
 
@@ -41,7 +41,11 @@ fn fixture(id: &str) -> Fixture {
 fn layout(fx: &Fixture) -> Vec<String> {
     let bytes = std::fs::read(font_path(&fx.font)).expect("font");
     let face = Face::parse(&bytes).expect("parse");
-    let style = TextStyle { size: fx.size, leading: Some(fx.leading), ..Default::default() };
+    let style = TextStyle {
+        size: fx.size,
+        leading: Some(fx.leading),
+        ..Default::default()
+    };
     let para = ParagraphStyle {
         justification: Justification::Left,
         every_line_composer: fx.composer == "every",
@@ -59,7 +63,14 @@ fn layout(fx: &Fixture) -> Vec<String> {
     );
     out.lines
         .iter()
-        .map(|l| l.glyphs.iter().map(|g| g.ch).collect::<String>().trim_end().to_string())
+        .map(|l| {
+            l.glyphs
+                .iter()
+                .map(|g| g.ch)
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
         .collect()
 }
 
@@ -68,7 +79,10 @@ fn single_line_composer_matches_photoshop_breaks() {
     let fx = fixture("composer_single");
     assert_eq!(fx.composer, "single");
     let ours = layout(&fx);
-    assert_eq!(ours, fx.lines, "single-line composer broke the paragraph differently");
+    assert_eq!(
+        ours, fx.lines,
+        "single-line composer broke the paragraph differently"
+    );
     let mut at = 0;
     let ends: Vec<usize> = ours
         .iter()
@@ -77,7 +91,10 @@ fn single_line_composer_matches_photoshop_breaks() {
             at.min(fx.text.chars().count())
         })
         .collect();
-    assert_eq!(ends, fx.line_ends, "line-end indices drifted from Photoshop's");
+    assert_eq!(
+        ends, fx.line_ends,
+        "line-end indices drifted from Photoshop's"
+    );
 }
 
 #[test]
@@ -85,7 +102,10 @@ fn every_line_composer_matches_photoshop_breaks() {
     let fx = fixture("composer_every");
     assert_eq!(fx.composer, "every");
     let ours = layout(&fx);
-    assert_eq!(ours, fx.lines, "every-line composer broke the paragraph differently");
+    assert_eq!(
+        ours, fx.lines,
+        "every-line composer broke the paragraph differently"
+    );
     // The composers must actually disagree here, otherwise the fixture proves
     // nothing about the every-line search.
     assert_ne!(layout(&fixture("composer_single")), ours);
@@ -100,8 +120,15 @@ fn single_line_composer_reproduces_photoshop_advances() {
     let fx = fixture("composer_single");
     let bytes = std::fs::read(font_path(&fx.font)).expect("font");
     let face = Face::parse(&bytes).expect("parse");
-    let style = TextStyle { size: fx.size, leading: Some(fx.leading), ..Default::default() };
-    let para = ParagraphStyle { justification: Justification::Left, ..Default::default() };
+    let style = TextStyle {
+        size: fx.size,
+        leading: Some(fx.leading),
+        ..Default::default()
+    };
+    let para = ParagraphStyle {
+        justification: Justification::Left,
+        ..Default::default()
+    };
     let out = layout_area(
         &face,
         &fx.text,
@@ -129,7 +156,12 @@ fn single_line_composer_reproduces_photoshop_advances() {
         // advance), so allow a space's worth of drift there.
         let d = (ours[i] - fx.advances[i]).abs();
         worst = worst.max(d);
-        assert!(d < 0.02, "glyph {i}: ours {:.4} vs Photoshop {:.4}", ours[i], fx.advances[i]);
+        assert!(
+            d < 0.02,
+            "glyph {i}: ours {:.4} vs Photoshop {:.4}",
+            ours[i],
+            fx.advances[i]
+        );
     }
     assert!(worst < 0.02);
 }

@@ -2,7 +2,7 @@
 //!
 //! `cargo run --example area_lines -- <text> <width> <size> [every]`
 
-use photocraft_text::area::{layout_area, Justification, ParagraphStyle};
+use photocraft_text::area::{Justification, ParagraphStyle, layout_area};
 use photocraft_text::font::Face;
 use photocraft_text::layout::TextStyle;
 
@@ -17,7 +17,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let width: f32 = a[2].parse()?;
     let size: f32 = a[3].parse()?;
     let every = a.get(4).map(String::as_str) == Some("every");
-    let style = TextStyle { size, leading: Some(30.0), ..Default::default() };
+    let style = TextStyle {
+        size,
+        leading: Some(30.0),
+        ..Default::default()
+    };
     let para = ParagraphStyle {
         justification: Justification::Left,
         every_line_composer: every,
@@ -30,7 +34,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let last = line.glyphs.last().map(|g| g.x + g.advance).unwrap_or(0.0);
         println!("{:>7.2}  {s}", last - 20.0);
         if verbose {
-            let adv: Vec<String> = line.glyphs.iter().map(|g| format!("{:.2}", g.advance)).collect();
+            let adv: Vec<String> = line
+                .glyphs
+                .iter()
+                .map(|g| format!("{:.2}", g.advance))
+                .collect();
             println!("        {}", adv.join(" "));
         }
     }

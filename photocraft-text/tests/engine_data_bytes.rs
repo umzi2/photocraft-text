@@ -5,7 +5,9 @@ use photocraft_psd::descriptor::{Value as DescValue, VersionedDescriptor};
 
 fn engine_data_blobs(psd: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
-    let Ok(file) = PsdFile::from_bytes(psd) else { return out };
+    let Ok(file) = PsdFile::from_bytes(psd) else {
+        return out;
+    };
     for layer in file.layers() {
         let Some(block) = layer.blocks.iter().find(|b| &b.key == b"TySh") else {
             continue;

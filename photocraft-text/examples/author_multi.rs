@@ -14,7 +14,7 @@
 #[path = "common/author.rs"]
 mod common_author;
 
-use common_author::{author, LayerSpec, RunSpec};
+use common_author::{LayerSpec, RunSpec, author};
 use photocraft_psd::PsdFile;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,6 +43,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
     std::fs::write(&a[2], file.to_bytes()?)?;
-    println!("wrote {} runs {:?}", &a[2], spec.iter().map(|r| r.len).collect::<Vec<_>>());
+    println!(
+        "wrote {} runs {:?}",
+        &a[2],
+        spec.iter().map(|r| r.len).collect::<Vec<_>>()
+    );
     Ok(())
 }

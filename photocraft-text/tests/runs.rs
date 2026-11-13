@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use photocraft_psd::descriptor::{Value as DescValue, VersionedDescriptor};
 use photocraft_psd::PsdFile;
+use photocraft_psd::descriptor::{Value as DescValue, VersionedDescriptor};
 use photocraft_text::engine_data::{self, Value};
 use photocraft_text::font::Face;
 use photocraft_text::layout::{Kerning, TextStyle};
@@ -9,7 +9,13 @@ use photocraft_text::runs::{self, FontSet, RunStyle};
 
 fn font_bytes(name: &str) -> Vec<u8> {
     let home = std::env::var("HOME").expect("HOME");
-    let path: PathBuf = [&home, ".local/share/photocraft/wine/drive_c/windows/Fonts", name].iter().collect();
+    let path: PathBuf = [
+        &home,
+        ".local/share/photocraft/wine/drive_c/windows/Fonts",
+        name,
+    ]
+    .iter()
+    .collect();
     std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
@@ -18,7 +24,12 @@ fn close(a: f32, b: f32) -> bool {
 }
 
 fn tysh_engine_data(psd: &str) -> Vec<u8> {
-    let bytes = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../corpus").join(psd)).unwrap();
+    let bytes = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../corpus")
+            .join(psd),
+    )
+    .unwrap();
     let file = PsdFile::from_bytes(&bytes).unwrap();
     let layer = file
         .layers()
@@ -36,9 +47,15 @@ fn tysh_engine_data(psd: &str) -> Vec<u8> {
 
 fn set_style_run(doc: &mut Value, style_run: Value) {
     if let Value::Dict(root) = doc {
-        let engine = root.iter_mut().find(|(k, _)| k == "EngineDict").expect("EngineDict");
+        let engine = root
+            .iter_mut()
+            .find(|(k, _)| k == "EngineDict")
+            .expect("EngineDict");
         if let Value::Dict(entries) = &mut engine.1 {
-            let slot = entries.iter_mut().find(|(k, _)| k == "StyleRun").expect("StyleRun");
+            let slot = entries
+                .iter_mut()
+                .find(|(k, _)| k == "StyleRun")
+                .expect("StyleRun");
             slot.1 = style_run;
         }
     }
@@ -50,8 +67,8 @@ fn set_style_run(doc: &mut Value, style_run: Value) {
 ///   A  size 12: adv 639*0.012 = 7.668; manual kern -50/1000*12 = -0.6
 ///              A.adv = 7.668 - 0.6 = 7.068 (pen delta to V)     x=4.192
 ///   V  size 12: adv 600*0.012 = 7.2                             x=4.192+7.068=11.26
-///   o  size 24, hscale 0.5, tracking 100: 605*0.024*0.5 + 100/1000*24
-///              = 7.26 + 2.4 = 9.66                              x=11.26+7.2=18.46
+///   o  size 24, hscale 0.5, tracking 100: 605*0.024*0.5 + 100/1000*24*0.5
+///              = 7.26 + 1.2 = 8.46                              x=11.26+7.2=18.46
 ///   AV baseline shift 3.0 -> y=3.0; others y=0.
 #[test]
 fn three_runs_hand_computed_positions() {
@@ -59,7 +76,12 @@ fn three_runs_hand_computed_positions() {
     let face = Face::parse(&data).unwrap();
     let fonts = FontSet::new("NotoSans-Regular", face);
     let runs = vec![
-        RunStyle { len: 1, size: Some(8.0), color: Some([255, 0, 0]), ..Default::default() },
+        RunStyle {
+            len: 1,
+            size: Some(8.0),
+            color: Some([255, 0, 0]),
+            ..Default::default()
+        },
         RunStyle {
             len: 2,
             size: Some(12.0),
@@ -82,10 +104,19 @@ fn three_runs_hand_computed_positions() {
     let shaped = runs::shape_runs_detailed(&fonts, "LAVo", &runs, &base);
     assert_eq!(shaped.len(), 4);
 
-    let expect = [(0.0, 4.192, 0.0, 0), (4.192, 7.068, 3.0, 1), (11.26, 7.2, 3.0, 1), (18.46, 9.66, 0.0, 2)];
+    let expect = [
+        (0.0, 4.192, 0.0, 0),
+        (4.192, 7.068, 3.0, 1),
+        (11.26, 7.2, 3.0, 1),
+        (18.46, 8.46, 0.0, 2),
+    ];
     for (g, (x, adv, y, run)) in shaped.iter().zip(expect) {
         assert!(close(g.glyph.x, x), "x {} != {x}", g.glyph.x);
-        assert!(close(g.glyph.advance, adv), "advance {} != {adv}", g.glyph.advance);
+        assert!(
+            close(g.glyph.advance, adv),
+            "advance {} != {adv}",
+            g.glyph.advance
+        );
         assert!(close(g.glyph.y, y), "y {} != {y}", g.glyph.y);
         assert_eq!(g.run, run);
     }
@@ -102,19 +133,35 @@ fn three_runs_hand_computed_positions() {
 fn manual_kerning_moves_second_glyph_by_value_times_size() {
     let data = font_bytes("NotoSans-Regular.ttf");
     let fonts = FontSet::new("NotoSans-Regular", Face::parse(&data).unwrap());
-    let base = TextStyle { kerning: Kerning::Metrics, ..Default::default() };
+    let base = TextStyle {
+        kerning: Kerning::Metrics,
+        ..Default::default()
+    };
     let run = |kern: i16| {
-        vec![RunStyle { len: 2, size: Some(12.0), auto_kerning: Some(false), kerning: Some(kern), ..Default::default() }]
+        vec![RunStyle {
+            len: 2,
+            size: Some(12.0),
+            auto_kerning: Some(false),
+            kerning: Some(kern),
+            ..Default::default()
+        }]
     };
     let manual = runs::shape_runs(&fonts, "AV", &run(-50), &base);
     let zero = runs::shape_runs(&fonts, "AV", &run(0), &base);
     // -50/1000 * 12 = -0.6
-    assert!(close(manual[1].x - zero[1].x, -0.6), "manual kern delta {}", manual[1].x - zero[1].x);
+    assert!(
+        close(manual[1].x - zero[1].x, -0.6),
+        "manual kern delta {}",
+        manual[1].x - zero[1].x
+    );
 }
 
 #[test]
 fn from_engine_data_reads_plain_latin_run() {
-    let raw = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/plain_latin_engine_data.txt")).unwrap();
+    let raw = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/plain_latin_engine_data.txt"),
+    )
+    .unwrap();
     let root = engine_data::parse(&raw).unwrap();
     let style = runs::from_engine_data(&root);
     assert_eq!(style.len(), 1);
@@ -148,6 +195,9 @@ fn corpus_style_runs_round_trip_semantic() {
     let mut doc = original.clone();
     let style = runs::from_engine_data(&doc);
     set_style_run(&mut doc, runs::to_engine_data(&style));
-    assert!(doc == original, "StyleRun rebuilt from runs differs from parsed StyleRun");
+    assert!(
+        doc == original,
+        "StyleRun rebuilt from runs differs from parsed StyleRun"
+    );
     assert!(engine_data::parse(&engine_data::write(&doc)).unwrap() == original);
 }

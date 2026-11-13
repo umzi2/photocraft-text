@@ -59,6 +59,12 @@ pub struct GlyphPos {
     pub y: f32,
     /// Distance to the next glyph on the same line, in points.
     pub advance: f32,
+    /// Advance from the font's metrics plus this glyph's tracking and faux-bold
+    /// step, with no kerning.  Photoshop's composed cache (`Txt2` `/3`) is
+    /// measured against this nominal advance, so replacing the spacing model
+    /// with `nominal + correction` must not carry the engine's kerning a second
+    /// time.
+    pub nominal_advance: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -93,11 +99,25 @@ pub fn shape(face: &Face<'_>, text: &str, style: &TextStyle) -> Vec<GlyphPos> {
             (_, None) => 0.0,
             (Kerning::Metrics, Some(prev)) => face.kern_pair(prev, gid) as f32 * scale,
             (Kerning::Manual(v), Some(_)) => v as f32 / 1000.0 * style.size,
-            (Kerning::Optical, Some(prev)) => crate::optical::optical_kern(face, prev, gid, style.size),
+            (Kerning::Optical, Some(prev)) => {
+                crate::optical::optical_pair(face, prev, gid, style.size)
+            }
         };
         pen += kern * hscale;
-        let advance = face.advance(gid) as f32 * scale * hscale + tracking;
-        out.push(GlyphPos { gid, ch, x: pen, y: 0.0, advance });
+        // Photoshop applies the horizontal scale to the whole advance,
+        // tracking included: a 300/1000 em tracking step at 150 % is 1.5x as
+        // wide (measured on `10_all_features.psd` layer `03 tracking baseline
+        // scales`: 12 glyphs, 22 pt, hscale 1.5, tracking 300 give a 304 px
+        // ink width; tracking unscaled predicts 268 px).
+        let advance = face.advance(gid) as f32 * scale * hscale + tracking * hscale;
+        out.push(GlyphPos {
+            gid,
+            ch,
+            x: pen,
+            y: 0.0,
+            advance,
+            nominal_advance: advance,
+        });
         pen += advance;
         prev_gid = Some(gid);
     }
@@ -105,7 +125,10 @@ pub fn shape(face: &Face<'_>, text: &str, style: &TextStyle) -> Vec<GlyphPos> {
     // Convert absolute pen positions into forward deltas.
     let mut deltas = Vec::with_capacity(out.len());
     for i in 0..out.len() {
-        let next = out.get(i + 1).map(|g| g.x).unwrap_or(out[i].x + out[i].advance);
+        let next = out
+            .get(i + 1)
+            .map(|g| g.x)
+            .unwrap_or(out[i].x + out[i].advance);
         deltas.push(next - out[i].x);
     }
     for (g, d) in out.iter_mut().zip(deltas) {
@@ -119,12 +142,11 @@ pub fn shape(face: &Face<'_>, text: &str, style: &TextStyle) -> Vec<GlyphPos> {
 ///
 /// The pen continues across runs (a run boundary adds no advance of its own);
 /// each run's baseline shift moves only its own glyphs.
-pub fn layout_point_runs(
-    face: &Face<'_>,
-    runs: &[(&str, TextStyle)],
-    origin: (f32, f32),
-) -> Line {
-    let mut line = Line { baseline: origin.1, ..Default::default() };
+pub fn layout_point_runs(face: &Face<'_>, runs: &[(&str, TextStyle)], origin: (f32, f32)) -> Line {
+    let mut line = Line {
+        baseline: origin.1,
+        ..Default::default()
+    };
     let mut pen = origin.0;
     for (text, style) in runs {
         let y = origin.1 + style.baseline_shift;
@@ -134,7 +156,11 @@ pub fn layout_point_runs(
         line.baseline = line.baseline.max(y);
         for g in shape(face, text, style) {
             pen += g.advance;
-            line.glyphs.push(GlyphPos { x: pen - g.advance, y, ..g });
+            line.glyphs.push(GlyphPos {
+                x: pen - g.advance,
+                y,
+                ..g
+            });
         }
     }
     line.width = pen - origin.0;
@@ -143,10 +169,18 @@ pub fn layout_point_runs(
 
 /// Lays out point text: `\r` starts a new line, the first baseline sits at the
 /// given origin and following lines step down by the leading.
-pub fn layout_point(face: &Face<'_>, text: &str, style: &TextStyle, origin: (f32, f32)) -> Vec<Line> {
+pub fn layout_point(
+    face: &Face<'_>,
+    text: &str,
+    style: &TextStyle,
+    origin: (f32, f32),
+) -> Vec<Line> {
     let leading = style.leading_pt();
     let mut lines = Vec::new();
-    let mut line = Line { baseline: origin.1 + style.baseline_shift, ..Default::default() };
+    let mut line = Line {
+        baseline: origin.1 + style.baseline_shift,
+        ..Default::default()
+    };
     let mut pen = origin.0;
 
     for chunk in text.split(['\r', '\n']) {
@@ -157,7 +191,11 @@ pub fn layout_point(face: &Face<'_>, text: &str, style: &TextStyle, origin: (f32
             pen = origin.0;
         }
         for g in shape(face, chunk, style) {
-            let placed = GlyphPos { x: pen, y: line.baseline, ..g };
+            let placed = GlyphPos {
+                x: pen,
+                y: line.baseline,
+                ..g
+            };
             pen += g.advance;
             line.glyphs.push(placed);
         }

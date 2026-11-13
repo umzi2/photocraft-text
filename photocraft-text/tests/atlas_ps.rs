@@ -15,12 +15,17 @@ use photocraft_text::runs::RunStyle;
 const TEXT: &str = "Hamburgefonstiv AVATAR To Ty.";
 
 fn repo() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().expect("repo root").to_path_buf()
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("repo root")
+        .to_path_buf()
 }
 
 fn fonts_dir() -> PathBuf {
     let home = std::env::var("HOME").expect("HOME");
-    [&home, ".local/share/photocraft/wine/drive_c/windows/Fonts"].iter().collect()
+    [&home, ".local/share/photocraft/wine/drive_c/windows/Fonts"]
+        .iter()
+        .collect()
 }
 
 /// The type layer of `corpus/plain_latin.psd` as straight RGBA (transparent
@@ -39,7 +44,9 @@ fn photoshop_layer() -> (u32, u32, Vec<u8>) {
     let red = layer.decode_channel(0, depth, version).expect("R");
     let green = layer.decode_channel(1, depth, version).expect("G");
     let blue = layer.decode_channel(2, depth, version).expect("B");
-    let alpha = layer.channel(-1).map(|_| layer.decode_channel(-1, depth, version).expect("A"));
+    let alpha = layer
+        .channel(-1)
+        .map(|_| layer.decode_channel(-1, depth, version).expect("A"));
     assert_eq!(red.len(), w * h, "unexpected channel size");
     let mut rgba = Vec::with_capacity(w * h * 4);
     for i in 0..w * h {
@@ -71,14 +78,22 @@ fn atlas_render_is_byte_identical_to_photoshop() {
         ..RunStyle::default()
     };
     let spec = LayerTextStyle {
-        style: photocraft_text::layout::TextStyle { size: 48.0, ..Default::default() },
+        style: photocraft_text::layout::TextStyle {
+            size: 48.0,
+            ..Default::default()
+        },
         paragraph: Default::default(),
         box_size: (0.0, 0.0),
         origin: (0.0, 0.0),
         color: [0, 0, 0],
     };
-    let options = RenderOptions { aa: None, use_atlas: true };
-    let ours = store.render_spec_with(TEXT, &[run], &spec, options).expect("render");
+    let options = RenderOptions {
+        aa: None,
+        use_atlas: true,
+    };
+    let ours = store
+        .render_spec_with(TEXT, &[run], &spec, options)
+        .expect("render");
     let (w, h, expected) = photoshop_layer();
     assert_eq!((ours.width, ours.height), (w, h), "layer size differs");
     let differing = ours

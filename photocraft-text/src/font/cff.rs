@@ -29,7 +29,8 @@ fn bad(msg: &'static str) -> Error {
 }
 
 fn be16(data: &[u8], at: usize) -> Option<u16> {
-    data.get(at..at + 2).map(|b| u16::from_be_bytes([b[0], b[1]]))
+    data.get(at..at + 2)
+        .map(|b| u16::from_be_bytes([b[0], b[1]]))
 }
 
 fn be_i16(data: &[u8], at: usize) -> Option<i16> {
@@ -37,7 +38,8 @@ fn be_i16(data: &[u8], at: usize) -> Option<i16> {
 }
 
 fn be_i32(data: &[u8], at: usize) -> Option<i32> {
-    data.get(at..at + 4).map(|b| i32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    data.get(at..at + 4)
+        .map(|b| i32::from_be_bytes([b[0], b[1], b[2], b[3]]))
 }
 
 /// Big-endian unsigned offset of `1..=4` bytes.
@@ -67,7 +69,12 @@ impl<'a> Index<'a> {
         let count = be16(data, at).ok_or(oob(at + 2, data.len()))? as usize;
         if count == 0 {
             let next = at.checked_add(2).ok_or(oob(usize::MAX, data.len()))?;
-            return Ok(Self { data, offsets: Vec::new(), base: next, next });
+            return Ok(Self {
+                data,
+                offsets: Vec::new(),
+                base: next,
+                next,
+            });
         }
         let off_size = *data.get(at + 2).ok_or(oob(at + 3, data.len()))? as usize;
         if !(1..=4).contains(&off_size) {
@@ -86,7 +93,12 @@ impl<'a> Index<'a> {
         if next > data.len() {
             return Err(oob(next, data.len()));
         }
-        Ok(Self { data, offsets, base, next })
+        Ok(Self {
+            data,
+            offsets,
+            base,
+            next,
+        })
     }
 
     fn len(&self) -> usize {
@@ -283,7 +295,9 @@ impl<'a> Cff<'a> {
 }
 
 fn parse_private<'a>(data: &'a [u8], off: usize, size: usize) -> Result<Private<'a>> {
-    let end = off.checked_add(size).ok_or(bad("CFF Private DICT offset"))?;
+    let end = off
+        .checked_add(size)
+        .ok_or(bad("CFF Private DICT offset"))?;
     let dict = data.get(off..end).ok_or(oob(end, data.len()))?;
     let mut private = Private::default();
     let mut subrs_off = None;
@@ -296,7 +310,9 @@ fn parse_private<'a>(data: &'a [u8], off: usize, size: usize) -> Result<Private<
         }
     }
     if let Some(subrs_off) = subrs_off {
-        let at = off.checked_add(subrs_off as usize).ok_or(bad("CFF Subrs offset"))?;
+        let at = off
+            .checked_add(subrs_off as usize)
+            .ok_or(bad("CFF Subrs offset"))?;
         private.subrs = Some(Index::parse(data, at)?);
     }
     Ok(private)
@@ -319,7 +335,9 @@ fn parse_fd_select(data: &[u8], at: usize, num_glyphs: usize) -> Result<Vec<u16>
     let format = *data.get(at).ok_or(oob(at + 1, data.len()))?;
     match format {
         0 => {
-            let bytes = data.get(at + 1..at + 1 + num_glyphs).ok_or(oob(at + 1 + num_glyphs, data.len()))?;
+            let bytes = data
+                .get(at + 1..at + 1 + num_glyphs)
+                .ok_or(oob(at + 1 + num_glyphs, data.len()))?;
             Ok(bytes.iter().map(|b| *b as u16).collect())
         }
         3 => {
@@ -504,7 +522,10 @@ impl<'a> Interp<'a> {
     fn map(&self, x: f64, y: f64) -> Pt {
         let fx = self.upm * (self.matrix[0] * x + self.matrix[2] * y + self.matrix[4]);
         let fy = self.upm * (self.matrix[1] * x + self.matrix[3] * y + self.matrix[5]);
-        Pt { x: fx as f32, y: fy as f32 }
+        Pt {
+            x: fx as f32,
+            y: fy as f32,
+        }
     }
 
     fn map_vector(&self, dx: f64, dy: f64) -> (f32, f32) {
@@ -514,9 +535,14 @@ impl<'a> Interp<'a> {
     }
 
     fn finish_contour(&mut self) {
-        let Some(start) = self.start.take() else { return };
+        let Some(start) = self.start.take() else {
+            return;
+        };
         if !self.segs.is_empty() {
-            self.path.push(Contour { start, segs: std::mem::take(&mut self.segs) });
+            self.path.push(Contour {
+                start,
+                segs: std::mem::take(&mut self.segs),
+            });
         }
     }
 
@@ -588,7 +614,10 @@ impl<'a> Interp<'a> {
                 10 | 29 => {
                     let raw = self.pop()?;
                     let (index, bias) = if b == 10 {
-                        (self.local_subrs, self.local_subrs.map(|s| subr_bias(s.len())).unwrap_or(0))
+                        (
+                            self.local_subrs,
+                            self.local_subrs.map(|s| subr_bias(s.len())).unwrap_or(0),
+                        )
                     } else {
                         (Some(self.global_subrs), subr_bias(self.global_subrs.len()))
                     };
@@ -626,8 +655,12 @@ impl<'a> Interp<'a> {
         self.finish_contour();
         if args.len() >= 4 {
             let (adx, ady) = self.map_vector(args[0], args[1]);
-            self.seac =
-                Some(Seac { adx, ady, bchar: args[2] as i64 as u8, achar: args[3] as i64 as u8 });
+            self.seac = Some(Seac {
+                adx,
+                ady,
+                bchar: args[2] as i64 as u8,
+                achar: args[3] as i64 as u8,
+            });
         }
     }
 
@@ -812,7 +845,11 @@ impl<'a> Interp<'a> {
             0.0
         };
         let cur = self.cur;
-        self.curve_to((cur.0 + dxa, cur.1), (cur.0 + dxa + dxb, cur.1 + dyb), (cur.0 + dxa + dxb + dxc, cur.1 + dyb + dyc));
+        self.curve_to(
+            (cur.0 + dxa, cur.1),
+            (cur.0 + dxa + dxb, cur.1 + dyb),
+            (cur.0 + dxa + dxb + dxc, cur.1 + dyb + dyc),
+        );
         Ok(())
     }
 
@@ -831,7 +868,11 @@ impl<'a> Interp<'a> {
             0.0
         };
         let cur = self.cur;
-        self.curve_to((cur.0, cur.1 + dya), (cur.0 + dxb, cur.1 + dya + dyb), (cur.0 + dxb + dxc, cur.1 + dya + dyb + dyc));
+        self.curve_to(
+            (cur.0, cur.1 + dya),
+            (cur.0 + dxb, cur.1 + dya + dyb),
+            (cur.0 + dxb + dxc, cur.1 + dya + dyb + dyc),
+        );
         Ok(())
     }
 
@@ -853,7 +894,8 @@ impl<'a> Interp<'a> {
                 if a.len() < 7 {
                     return Err(bad("CFF hflex arguments"));
                 }
-                let (dx1, dx2, dy2, dx3, dx4, dx5, dx6) = (a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+                let (dx1, dx2, dy2, dx3, dx4, dx5, dx6) =
+                    (a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
                 self.relative_curve(dx1, 0.0, dx2, dy2, dx3, 0.0);
                 self.relative_curve(dx4, 0.0, dx5, -dy2, dx6, 0.0);
                 Ok(())
@@ -879,7 +921,11 @@ impl<'a> Interp<'a> {
                 }
                 let dx = a[0] + a[2] + a[4] + a[6] + a[8];
                 let dy = a[1] + a[3] + a[5] + a[7] + a[9];
-                let (dx6, dy6) = if dx.abs() > dy.abs() { (a[10], -dy) } else { (-dx, a[10]) };
+                let (dx6, dy6) = if dx.abs() > dy.abs() {
+                    (a[10], -dy)
+                } else {
+                    (-dx, a[10])
+                };
                 self.relative_curve(a[0], a[1], a[2], a[3], a[4], a[5]);
                 self.relative_curve(a[6], a[7], a[8], a[9], dx6, dy6);
                 Ok(())
@@ -967,8 +1013,10 @@ impl<'a> Interp<'a> {
             23 => {
                 // random in (0, 1); the generator is fixed so outlines are
                 // reproducible across runs.
-                self.rng =
-                    self.rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                self.rng = self
+                    .rng
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 let value = ((self.rng >> 11) as f64 + 1.0) / ((1u64 << 53) as f64 + 1.0);
                 self.push(value)
             }

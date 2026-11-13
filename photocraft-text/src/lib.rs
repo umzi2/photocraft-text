@@ -5,20 +5,22 @@
 //! kerning (metrics and optical), tracking, leading, justification and the
 //! point/area text layout that produces those numbers.
 
-pub mod error;
-pub mod font;
 pub mod area;
+pub mod atlas;
 pub mod composer;
 pub mod engine_data;
+pub mod error;
+pub mod font;
+pub mod hyphen;
+pub mod layer_render;
 pub mod layout;
-pub mod txt2;
-pub mod runs;
-pub mod typography;
 pub mod optical;
 pub mod outline;
-pub mod atlas;
 pub mod raster;
-pub mod layer_render;
+pub mod runs;
+pub mod txt2;
+pub mod typography;
+pub mod warp;
 
 pub use error::{Error, Result};
 pub use font::{Face, GlyphMetrics};

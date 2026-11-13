@@ -128,7 +128,11 @@ impl<'a> Gpos<'a> {
     }
 }
 
-fn collect_kern_lookups(data: &[u8], feature_list: usize, lookup_list: usize) -> Option<Vec<usize>> {
+fn collect_kern_lookups(
+    data: &[u8],
+    feature_list: usize,
+    lookup_list: usize,
+) -> Option<Vec<usize>> {
     let mut fl = Reader::at(data, feature_list).ok()?;
     let feature_count = fl.u16().ok()?;
     let mut records = Vec::new();
@@ -156,7 +160,12 @@ fn collect_kern_lookups(data: &[u8], feature_list: usize, lookup_list: usize) ->
     for _ in 0..lookup_count {
         offsets.push(ll.u16().ok()? as usize);
     }
-    Some(lookups.into_iter().filter_map(|i| offsets.get(i).map(|o| lookup_list + o)).collect())
+    Some(
+        lookups
+            .into_iter()
+            .filter_map(|i| offsets.get(i).map(|o| lookup_list + o))
+            .collect(),
+    )
 }
 
 fn coverage_index(data: &[u8], at: usize, gid: u16) -> Option<usize> {

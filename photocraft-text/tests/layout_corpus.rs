@@ -3,9 +3,9 @@
 
 use std::path::PathBuf;
 
-use photocraft_text::area::{layout_area, Justification, ParagraphStyle};
+use photocraft_text::area::{Justification, ParagraphStyle, layout_area};
 use photocraft_text::font::Face;
-use photocraft_text::layout::{layout_point, Kerning, TextStyle};
+use photocraft_text::layout::{Kerning, TextStyle, layout_point};
 
 #[derive(serde::Deserialize)]
 struct Fixture {
@@ -57,7 +57,9 @@ fn font_path(name: &str) -> PathBuf {
         "ArialMT" => "arial.ttf".to_string(),
         other => format!("{other}.ttf"),
     };
-    PathBuf::from(home).join(".local/share/photocraft/wine/drive_c/windows/Fonts").join(file)
+    PathBuf::from(home)
+        .join(".local/share/photocraft/wine/drive_c/windows/Fonts")
+        .join(file)
 }
 
 fn fixtures() -> Vec<PathBuf> {
@@ -148,7 +150,12 @@ fn layout_matches_photoshop_corpus() {
         }
 
         if ours.len() != fx.glyphs.len() {
-            failures.push(format!("{}: {} glyphs vs {}", fx.id, ours.len(), fx.glyphs.len()));
+            failures.push(format!(
+                "{}: {} glyphs vs {}",
+                fx.id,
+                ours.len(),
+                fx.glyphs.len()
+            ));
             continue;
         }
         for (i, (expected, (ch, x, y))) in fx.glyphs.iter().zip(&ours).enumerate() {
@@ -183,8 +190,12 @@ fn layout_matches_photoshop_corpus() {
 fn vertical_scale_leaves_advances_alone() {
     // Same text set twice: one layer at 150% horizontal scale, one at 150%
     // vertical scale. Only the horizontal one may move the pen.
-    let v: Fixture = serde_json::from_str(&std::fs::read_to_string("tests/data/vscale_150.json").unwrap()).unwrap();
-    let h: Fixture = serde_json::from_str(&std::fs::read_to_string("tests/data/hscale_150.json").unwrap()).unwrap();
+    let v: Fixture =
+        serde_json::from_str(&std::fs::read_to_string("tests/data/vscale_150.json").unwrap())
+            .unwrap();
+    let h: Fixture =
+        serde_json::from_str(&std::fs::read_to_string("tests/data/hscale_150.json").unwrap())
+            .unwrap();
     assert_eq!(v.vscale, Some(150.0));
     assert_eq!(h.hscale, Some(150.0));
     assert_eq!(v.glyphs.len(), h.glyphs.len());

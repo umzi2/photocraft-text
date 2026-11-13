@@ -41,16 +41,66 @@ pub struct AutoLeadingRow {
 /// | CCGrimNGritty            | -    | None    | not in corpus; UNMEASURED                   |
 /// | CCSpellcaster            | -    | None    | not in corpus; UNMEASURED                   |
 pub const AUTO_LEADING_TABLE: &[AutoLeadingRow] = &[
-    AutoLeadingRow { font: "NotoSans-Regular", size: 12.0, leading: Some(14.4), source: "corpus/size_12" },
-    AutoLeadingRow { font: "NotoSans-Regular", size: 24.0, leading: Some(28.8), source: "corpus/size_24" },
-    AutoLeadingRow { font: "NotoSans-Regular", size: 48.0, leading: Some(57.6), source: "corpus/box_left" },
-    AutoLeadingRow { font: "NotoSans-Regular", size: 96.0, leading: Some(115.2), source: "corpus/boxprobe_96" },
-    AutoLeadingRow { font: "NotoSerif-Regular", size: 48.0, leading: Some(57.6), source: "corpus/serif" },
-    AutoLeadingRow { font: "ArialMT", size: 48.0, leading: Some(57.6), source: "corpus/boxprobe_arial" },
-    AutoLeadingRow { font: "v_CCWildButNotCrazy", size: 0.0, leading: None, source: "no auto layer in corpus" },
-    AutoLeadingRow { font: "CCMeanwhile", size: 0.0, leading: None, source: "UNMEASURED" },
-    AutoLeadingRow { font: "CCGrimNGritty", size: 0.0, leading: None, source: "UNMEASURED" },
-    AutoLeadingRow { font: "CCSpellcaster", size: 0.0, leading: None, source: "UNMEASURED" },
+    AutoLeadingRow {
+        font: "NotoSans-Regular",
+        size: 12.0,
+        leading: Some(14.4),
+        source: "corpus/size_12",
+    },
+    AutoLeadingRow {
+        font: "NotoSans-Regular",
+        size: 24.0,
+        leading: Some(28.8),
+        source: "corpus/size_24",
+    },
+    AutoLeadingRow {
+        font: "NotoSans-Regular",
+        size: 48.0,
+        leading: Some(57.6),
+        source: "corpus/box_left",
+    },
+    AutoLeadingRow {
+        font: "NotoSans-Regular",
+        size: 96.0,
+        leading: Some(115.2),
+        source: "corpus/boxprobe_96",
+    },
+    AutoLeadingRow {
+        font: "NotoSerif-Regular",
+        size: 48.0,
+        leading: Some(57.6),
+        source: "corpus/serif",
+    },
+    AutoLeadingRow {
+        font: "ArialMT",
+        size: 48.0,
+        leading: Some(57.6),
+        source: "corpus/boxprobe_arial",
+    },
+    AutoLeadingRow {
+        font: "v_CCWildButNotCrazy",
+        size: 0.0,
+        leading: None,
+        source: "no auto layer in corpus",
+    },
+    AutoLeadingRow {
+        font: "CCMeanwhile",
+        size: 0.0,
+        leading: None,
+        source: "UNMEASURED",
+    },
+    AutoLeadingRow {
+        font: "CCGrimNGritty",
+        size: 0.0,
+        leading: None,
+        source: "UNMEASURED",
+    },
+    AutoLeadingRow {
+        font: "CCSpellcaster",
+        size: 0.0,
+        leading: None,
+        source: "UNMEASURED",
+    },
 ];
 
 /// Auto leading for `face` at `size` points.
@@ -149,7 +199,10 @@ pub struct PlacedLine {
 /// has a nonzero SpaceBefore (all 0.0, measured), so this is unverified against
 /// PS. The first line of a paragraph is offset by `start_indent +
 /// first_line_indent`; later lines by `start_indent`. Empty paragraphs are skipped.
-pub fn apply_paragraph_spacing(first_baseline: f32, paragraphs: &[ParagraphBlock]) -> Vec<PlacedLine> {
+pub fn apply_paragraph_spacing(
+    first_baseline: f32,
+    paragraphs: &[ParagraphBlock],
+) -> Vec<PlacedLine> {
     let mut out = Vec::new();
     let mut baseline = first_baseline;
     let mut prev_after: Option<f32> = None;
@@ -238,9 +291,13 @@ pub fn faux_italic_point(x: f32, y: f32) -> (f32, f32) {
     (x + y * FAUX_ITALIC_SKEW, y)
 }
 
-/// Faux bold strength divisor. Strength = `size / 24`, FreeType
-/// `FT_GlyphSlot_Embolden` (ftsynth.c). [INFERENCE] Photoshop not measured.
-pub const FAUX_BOLD_DIVISOR: f32 = 24.0;
+/// Faux bold strength divisor. Photoshop's faux bold adds a smaller advance
+/// than FreeType's `FT_GlyphSlot_Embolden` (`size / 24`): layer `01
+/// capitalisation underline faux bold` (Noto Sans Bold 30 pt) has a run width of
+/// 573.47 pt, which is 25.9 pt more than the plain metrics run (547.6 pt) for
+/// 32 glyphs, i.e. `size / 37` per glyph. With `size / 24` the glyphs drift
+/// 14 pt past the stored rectangle. [MEASURED on 10_all_features.psd]
+pub const FAUX_BOLD_DIVISOR: f32 = 37.0;
 
 /// Faux bold: extra advance added per glyph, in points.
 pub fn faux_bold_extra_advance(size: f32) -> f32 {
@@ -285,6 +342,65 @@ pub fn strikeout_geometry(os2: &[u8], size: f32, units_per_em: u16) -> Option<De
         offset: pos * k,
         thickness: thick * k,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Measured underline / strikeout bands (Photoshop 20.0.2, CC 2019)
+// ---------------------------------------------------------------------------
+//
+// Photoshop rasterises rules at a 4x subpixel grid, so a stored row's coverage
+// is a multiple of 1/4 (alpha 128 = .50, 192 = .75). Measured on
+// `10_all_features.psd` against the device baseline row (NotoSans 24/26/30 pt,
+// Crisp AA):
+//
+// | layer | size | kind  | stored rows                 | band            |
+// |-------|------|-------|-----------------------------|-----------------|
+// | 01    | 30   | under | 28: .50, 29: 1.00           | 28.50 .. 30.00  |
+// | 07    | 24   | under | 23: .75, 24: .50            | 23.25 .. 24.50  |
+// | 02    | 26   | strike| 6: .50, 7: .75              | 6.50 .. 7.75    |
+//
+// Baselines in those canvases are rows 22 (01), 18 (07) and 20 (02), which the
+// glyph cells confirm. Fitting the three bands in device space (distance from
+// the baseline to the band's TOP edge, positive down) gives:
+//
+//   underline top = quantise_quarter(0.2 * size + 0.5)
+//   strike top    = -quantise_quarter(0.5 * size + 0.5)
+//   thickness     = quantise_quarter(0.05 * size), at least 1 px
+//
+// which is 30 pt -> +6.5 / 1.5, 24 pt -> +5.25 / 1.25, 26 pt -> -13.5 / 1.25:
+// exactly the stored bands above. Photoshop does not use the `post` or `OS/2`
+// decoration metrics of these fonts (NotoSans has -100/50 for both), and the
+// half-pixel term is part of the fit: the rule baseline sits half a pixel
+// below the integer row the glyph cells use.
+
+/// Round to the 1/4 px grid Photoshop's rule rasteriser works on.
+fn quantise_quarter(value: f32) -> f32 {
+    (value * 4.0).round() / 4.0
+}
+
+/// Underline band: `offset` is the distance from the baseline to the band's
+/// top edge, positive downward in device space (the convention
+/// [`crate::raster::Canvas::underline`] takes); `thickness` is the band height.
+pub fn underline_band(size: f32) -> Decoration {
+    Decoration {
+        offset: quantise_quarter(0.2 * size + 0.5),
+        thickness: decoration_thickness(size),
+    }
+}
+
+/// Strikeout band: same conventions as [`underline_band`], with a negative
+/// offset because the band sits above the baseline.
+pub fn strikeout_band(size: f32) -> Decoration {
+    Decoration {
+        offset: -quantise_quarter(0.5 * size + 0.5),
+        thickness: decoration_thickness(size),
+    }
+}
+
+/// Measured rule thickness: a twentieth of the size, on the 1/4 px grid and at
+/// least one pixel.
+pub fn decoration_thickness(size: f32) -> f32 {
+    quantise_quarter(0.05 * size).max(1.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +471,7 @@ pub const RIGHT_HANG: &[(char, f32)] = &[
 /// so whether burasagari applies to a native CJK face is open. The set is
 /// [INFERENCE] from JIS X 4051 and uses the half-em fraction the fallback
 /// measurements show.
+#[allow(dead_code)]
 pub const CJK_LEFT_HANG: &[(char, f32)] = &[
     ('\u{300C}', 0.5), // 「
     ('\u{300E}', 0.5), // 『
@@ -372,6 +489,7 @@ pub const CJK_LEFT_HANG: &[(char, f32)] = &[
 /// CJK full-width right-hang characters. [INFERENCE]: no Photoshop artefact
 /// shows a CJK line-final glyph hanging (the CJK hanging probe showed no effect
 /// at all), the model is JIS X 4051 "burasage" with the same half-em fraction.
+#[allow(dead_code)]
 pub const CJK_RIGHT_HANG: &[(char, f32)] = &[
     ('\u{3002}', 0.5), // 。
     ('\u{3001}', 0.5), // 、
@@ -401,13 +519,18 @@ fn lookup(table: &'static [(char, f32)], ch: char) -> Option<f32> {
 /// the glyph is one of the measured/inferred left-hang characters. `None` for
 /// characters that do not hang on the left.
 pub fn left_hang_fit(ch: char) -> Option<f32> {
-    lookup(LEFT_HANG, ch).or_else(|| lookup(CJK_LEFT_HANG, ch))
+    // CJK punctuation does not hang on a native CJK face: `10_all_features.psd`
+    // layer `10 cjk heiti` starts `「` exactly at the box edge and its line ends
+    // at the box edge (PDF glyph x = 620.0 and 1170.0), whereas the half-em CJK
+    // tables would shift the whole line 11 px left.  The `CJK_*_HANG` tables are
+    // kept for the fallback-font probe only; they are not consulted here.
+    lookup(LEFT_HANG, ch)
 }
 
 /// Fraction of a right-hanging glyph's advance that stays in the line-fit
 /// width. `None` for characters that do not hang on the right.
 pub fn right_hang_fit(ch: char) -> Option<f32> {
-    lookup(RIGHT_HANG, ch).or_else(|| lookup(CJK_RIGHT_HANG, ch))
+    lookup(RIGHT_HANG, ch)
 }
 
 /// Whether `ch` may hang into the left margin at the start of a line.

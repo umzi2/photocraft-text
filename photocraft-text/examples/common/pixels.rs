@@ -12,7 +12,10 @@ use photocraft_psd::{Compression, PsdFile};
 use photocraft_text::engine_data;
 
 /// Re-renders the first text layer of `file` and stores the result in it.
-pub fn refresh_text_layer(file: &mut PsdFile, text: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn refresh_text_layer(
+    file: &mut PsdFile,
+    text: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let fonts = std::env::var_os("HOME")
         .map(|h| PathBuf::from(h).join(".local/share/photocraft/wine/drive_c/windows/Fonts"));
     let mut store = photocraft_text::layer_render::FaceStore::new();
@@ -63,7 +66,13 @@ pub fn refresh_text_layer(file: &mut PsdFile, text: &str) -> Result<(), Box<dyn 
         Some(f) => ((f.right - f.left).max(1.0), (f.bottom - f.top).max(1.0)),
         None => (0.0, 0.0),
     };
-    let pixels = photocraft_text::layer_render::render_from_engine_data(&store, &ed, text, box_size, (0.0, 0.0))?;
+    let pixels = photocraft_text::layer_render::render_from_engine_data(
+        &store,
+        &ed,
+        text,
+        box_size,
+        (0.0, 0.0),
+    )?;
     // `pixels.offset` is measured from the first baseline: x from the text
     // origin, y from that baseline (negative = ink rises above it). Point text
     // is anchored at the `TySh` transform translation (the text origin, whose
@@ -72,7 +81,8 @@ pub fn refresh_text_layer(file: &mut PsdFile, text: &str) -> Result<(), Box<dyn 
     if pixels.width == 0 || pixels.height == 0 {
         return Ok(());
     }
-    let first_off = photocraft_text::layer_render::first_baseline_offset_of(&store, &ed).unwrap_or(0.0);
+    let first_off =
+        photocraft_text::layer_render::first_baseline_offset_of(&store, &ed).unwrap_or(0.0);
     let (anchor_x, anchor_y) = match frame {
         Some(f) => (f.left, f.top + first_off),
         None => {
@@ -90,7 +100,13 @@ pub fn refresh_text_layer(file: &mut PsdFile, text: &str) -> Result<(), Box<dyn 
         right: left.round() as i32 + pixels.width as i32,
         bottom: top.round() as i32 + pixels.height as i32,
     };
-    layer.set_rgba(&pixels.rgba, pixels.width as usize, pixels.height as usize, depth, version)?;
+    layer.set_rgba(
+        &pixels.rgba,
+        pixels.width as usize,
+        pixels.height as usize,
+        depth,
+        version,
+    )?;
     for ch in layer.channels.iter_mut() {
         if ch.compression.is_none() {
             ch.compression = Some(Compression::Rle);

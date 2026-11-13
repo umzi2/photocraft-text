@@ -73,7 +73,11 @@ impl Contour {
     /// curve. Cubics (CFF) and quadratics (`glyf`) are both accepted.
     pub fn flatten(&self, steps: usize) -> Vec<Point> {
         let steps = steps.max(1);
-        let mut points = vec![Point { x: self.start.x, y: self.start.y, on: true }];
+        let mut points = vec![Point {
+            x: self.start.x,
+            y: self.start.y,
+            on: true,
+        }];
         let mut cur = self.start;
         for seg in &self.segs {
             match *seg {
@@ -109,12 +113,19 @@ fn push_point(points: &mut Vec<Point>, p: Pt) {
     if last.map(|q| q.x == p.x && q.y == p.y).unwrap_or(false) {
         return;
     }
-    points.push(Point { x: p.x, y: p.y, on: true });
+    points.push(Point {
+        x: p.x,
+        y: p.y,
+        on: true,
+    });
 }
 
 fn quad_at(a: Pt, c: Pt, b: Pt, t: f32) -> Pt {
     let u = 1.0 - t;
-    Pt { x: u * u * a.x + 2.0 * u * t * c.x + t * t * b.x, y: u * u * a.y + 2.0 * u * t * c.y + t * t * b.y }
+    Pt {
+        x: u * u * a.x + 2.0 * u * t * c.x + t * t * b.x,
+        y: u * u * a.y + 2.0 * u * t * c.y + t * t * b.y,
+    }
 }
 
 fn cubic_at(a: Pt, c1: Pt, c2: Pt, b: Pt, t: f32) -> Pt {
@@ -225,7 +236,12 @@ pub fn path_bbox(path: &Path) -> Option<(f32, f32, f32, f32)> {
                 match *seg {
                     Seg::Line { to } => add(to.x as f64, to.y as f64),
                     Seg::Quad { ctrl, to } => {
-                        quad_bounds(cur, (ctrl.x as f64, ctrl.y as f64), (to.x as f64, to.y as f64), &mut add);
+                        quad_bounds(
+                            cur,
+                            (ctrl.x as f64, ctrl.y as f64),
+                            (to.x as f64, to.y as f64),
+                            &mut add,
+                        );
                     }
                     Seg::Cubic { c1, c2, to } => {
                         cubic_bounds(
@@ -263,24 +279,39 @@ fn contours_to_path(contours: &Contours) -> Path {
         } else if last.on {
             last
         } else {
-            Point { x: (last.x + first.x) * 0.5, y: (last.y + first.y) * 0.5, on: true }
+            Point {
+                x: (last.x + first.x) * 0.5,
+                y: (last.y + first.y) * 0.5,
+                on: true,
+            }
         };
-        let mut out = Contour { start: Pt::new(start.x, start.y), segs: Vec::new() };
+        let mut out = Contour {
+            start: Pt::new(start.x, start.y),
+            segs: Vec::new(),
+        };
         let mut cur = start;
         let mut ctrl: Option<Point> = None;
         for p in contour.iter().chain(std::iter::once(&start)) {
             if p.on {
                 if let Some(c) = ctrl.take() {
-                    out.segs.push(Seg::Quad { ctrl: Pt::new(c.x, c.y), to: Pt::new(p.x, p.y) });
+                    out.segs.push(Seg::Quad {
+                        ctrl: Pt::new(c.x, c.y),
+                        to: Pt::new(p.x, p.y),
+                    });
                 } else if p.x != cur.x || p.y != cur.y {
-                    out.segs.push(Seg::Line { to: Pt::new(p.x, p.y) });
+                    out.segs.push(Seg::Line {
+                        to: Pt::new(p.x, p.y),
+                    });
                 }
                 cur = *p;
             } else if let Some(c) = ctrl.take() {
                 // Two consecutive off-curve points imply an on-curve midpoint
                 // between them (the TrueType rule); emit that quadratic.
                 let mid = Pt::new((c.x + p.x) * 0.5, (c.y + p.y) * 0.5);
-                out.segs.push(Seg::Quad { ctrl: Pt::new(c.x, c.y), to: mid });
+                out.segs.push(Seg::Quad {
+                    ctrl: Pt::new(c.x, c.y),
+                    to: mid,
+                });
                 cur = *p;
                 ctrl = Some(*p);
             } else {
@@ -411,38 +442,26 @@ fn solve_quadratic(a: f64, b: f64, c: f64, out: &mut [f64; 2]) -> usize {
 /// accents are old Type 1 names that a Unicode cmap usually covers).
 fn standard_encoding_char(code: u8) -> Option<char> {
     const TABLE: [char; 256] = [
-        '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
-        '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
-        '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
-        '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
-        ' ', '!', '\u{22}', '#', '$', '%', '&', '\u{2019}',
-        '(', ')', '*', '+', ',', '-', '.', '/',
-        '0', '1', '2', '3', '4', '5', '6', '7',
-        '8', '9', ':', ';', '<', '=', '>', '?',
-        '@', 'A', 'B', 'C', 'D', 'E', 'F', 'G',
-        'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
-        'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W',
-        'X', 'Y', 'Z', '[', '\u{5c}', ']', '^', '_',
-        '\u{2018}', 'a', 'b', 'c', 'd', 'e', 'f', 'g',
-        'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
-        'p', 'q', 'r', 's', 't', 'u', 'v', 'w',
-        'x', 'y', 'z', '{', '|', '}', '~', '\0',
-        '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
-        '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
-        '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
-        '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
-        '\0', '\u{a1}', '\u{a2}', '\u{a3}', '\u{2044}', '\u{a5}', '\u{192}', '\u{a7}',
-        '\u{a4}', '\u{27}', '\u{201c}', '\u{ab}', '\u{2039}', '\u{203a}', '\u{fb01}', '\u{fb02}',
-        '\0', '\u{2013}', '\u{2020}', '\u{2021}', '\u{b7}', '\0', '\u{b6}', '\u{2022}',
-        '\u{201a}', '\u{201e}', '\u{201d}', '\u{bb}', '\u{2026}', '\u{2030}', '\0', '\u{bf}',
-        '\0', '`', '\u{b4}', '\u{2c6}', '\u{2dc}', '\u{af}', '\u{2d8}', '\u{2d9}',
-        '\u{a8}', '\0', '\u{2da}', '\u{b8}', '\0', '\u{2dd}', '\u{2db}', '\u{2c7}',
-        '\u{2014}', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
-        '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
-        '\0', '\u{c6}', '\0', '\u{aa}', '\0', '\0', '\0', '\0',
-        '\u{141}', '\u{d8}', '\u{152}', '\u{ba}', '\0', '\0', '\0', '\0',
-        '\0', '\u{e6}', '\0', '\0', '\0', '\u{131}', '\0', '\0',
-        '\u{142}', '\u{f8}', '\u{153}', '\u{df}', '\0', '\0', '\0', '\0',
+        '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
+        '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
+        '\0', '\0', ' ', '!', '\u{22}', '#', '$', '%', '&', '\u{2019}', '(', ')', '*', '+', ',',
+        '-', '.', '/', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>',
+        '?', '@', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
+        'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '[', '\u{5c}', ']', '^', '_', '\u{2018}',
+        'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r',
+        's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '{', '|', '}', '~', '\0', '\0', '\0', '\0', '\0',
+        '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
+        '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0',
+        '\u{a1}', '\u{a2}', '\u{a3}', '\u{2044}', '\u{a5}', '\u{192}', '\u{a7}', '\u{a4}',
+        '\u{27}', '\u{201c}', '\u{ab}', '\u{2039}', '\u{203a}', '\u{fb01}', '\u{fb02}', '\0',
+        '\u{2013}', '\u{2020}', '\u{2021}', '\u{b7}', '\0', '\u{b6}', '\u{2022}', '\u{201a}',
+        '\u{201e}', '\u{201d}', '\u{bb}', '\u{2026}', '\u{2030}', '\0', '\u{bf}', '\0', '`',
+        '\u{b4}', '\u{2c6}', '\u{2dc}', '\u{af}', '\u{2d8}', '\u{2d9}', '\u{a8}', '\0', '\u{2da}',
+        '\u{b8}', '\0', '\u{2dd}', '\u{2db}', '\u{2c7}', '\u{2014}', '\0', '\0', '\0', '\0', '\0',
+        '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\0', '\u{c6}', '\0', '\u{aa}',
+        '\0', '\0', '\0', '\0', '\u{141}', '\u{d8}', '\u{152}', '\u{ba}', '\0', '\0', '\0', '\0',
+        '\0', '\u{e6}', '\0', '\0', '\0', '\u{131}', '\0', '\0', '\u{142}', '\u{f8}', '\u{153}',
+        '\u{df}', '\0', '\0', '\0', '\0',
     ];
     match TABLE[code as usize] {
         '\0' => None,
@@ -462,13 +481,27 @@ fn glyph_contours_at(face: &Face<'_>, gid: u16, depth: usize) -> Result<Contours
     let gid = gid as usize;
     let (start, end) = if long {
         (
-            be32(loca, gid * 4).ok_or(Error::OutOfBounds { needed: gid * 4 + 4, len: loca.len() })? as usize,
-            be32(loca, (gid + 1) * 4).ok_or(Error::OutOfBounds { needed: gid * 4 + 8, len: loca.len() })? as usize,
+            be32(loca, gid * 4).ok_or(Error::OutOfBounds {
+                needed: gid * 4 + 4,
+                len: loca.len(),
+            })? as usize,
+            be32(loca, (gid + 1) * 4).ok_or(Error::OutOfBounds {
+                needed: gid * 4 + 8,
+                len: loca.len(),
+            })? as usize,
         )
     } else {
         (
-            be16(loca, gid * 2).ok_or(Error::OutOfBounds { needed: gid * 2 + 2, len: loca.len() })? as usize * 2,
-            be16(loca, (gid + 1) * 2).ok_or(Error::OutOfBounds { needed: gid * 2 + 4, len: loca.len() })? as usize * 2,
+            be16(loca, gid * 2).ok_or(Error::OutOfBounds {
+                needed: gid * 2 + 2,
+                len: loca.len(),
+            })? as usize
+                * 2,
+            be16(loca, (gid + 1) * 2).ok_or(Error::OutOfBounds {
+                needed: gid * 2 + 4,
+                len: loca.len(),
+            })? as usize
+                * 2,
         )
     };
     if end <= start || end > glyf.len() {
@@ -483,7 +516,10 @@ fn parse_glyph(face: &Face<'_>, data: &[u8], depth: usize, out: &mut Contours) -
     if depth > 8 {
         return Err(Error::BadFont("composite glyph nesting"));
     }
-    let num = bei16(data, 0).ok_or(Error::OutOfBounds { needed: 2, len: data.len() })?;
+    let num = bei16(data, 0).ok_or(Error::OutOfBounds {
+        needed: 2,
+        len: data.len(),
+    })?;
     if num >= 0 {
         return parse_simple(data, num as usize, out);
     }
@@ -497,20 +533,32 @@ fn parse_simple(data: &[u8], contours: usize, out: &mut Contours) -> Result<()> 
     let mut at = 10usize;
     let mut ends = Vec::with_capacity(contours);
     for _ in 0..contours {
-        ends.push(be16(data, at).ok_or(Error::OutOfBounds { needed: at + 2, len: data.len() })? as usize);
+        ends.push(be16(data, at).ok_or(Error::OutOfBounds {
+            needed: at + 2,
+            len: data.len(),
+        })? as usize);
         at += 2;
     }
     let points = ends.last().copied().unwrap_or(0) + 1;
-    let instr = be16(data, at).ok_or(Error::OutOfBounds { needed: at + 2, len: data.len() })? as usize;
+    let instr = be16(data, at).ok_or(Error::OutOfBounds {
+        needed: at + 2,
+        len: data.len(),
+    })? as usize;
     at += 2 + instr;
 
     let mut flags = Vec::with_capacity(points);
     while flags.len() < points {
-        let f = *data.get(at).ok_or(Error::OutOfBounds { needed: at + 1, len: data.len() })?;
+        let f = *data.get(at).ok_or(Error::OutOfBounds {
+            needed: at + 1,
+            len: data.len(),
+        })?;
         at += 1;
         flags.push(f);
         if f & REPEAT != 0 {
-            let n = *data.get(at).ok_or(Error::OutOfBounds { needed: at + 1, len: data.len() })?;
+            let n = *data.get(at).ok_or(Error::OutOfBounds {
+                needed: at + 1,
+                len: data.len(),
+            })?;
             at += 1;
             for _ in 0..n {
                 flags.push(f);
@@ -523,11 +571,17 @@ fn parse_simple(data: &[u8], contours: usize, out: &mut Contours) -> Result<()> 
     let mut x = 0f32;
     for &f in &flags {
         if f & X_SHORT != 0 {
-            let d = *data.get(at).ok_or(Error::OutOfBounds { needed: at + 1, len: data.len() })? as f32;
+            let d = *data.get(at).ok_or(Error::OutOfBounds {
+                needed: at + 1,
+                len: data.len(),
+            })? as f32;
             at += 1;
             x += if f & X_SAME != 0 { d } else { -d };
         } else if f & X_SAME == 0 {
-            x += bei16(data, at).ok_or(Error::OutOfBounds { needed: at + 2, len: data.len() })? as f32;
+            x += bei16(data, at).ok_or(Error::OutOfBounds {
+                needed: at + 2,
+                len: data.len(),
+            })? as f32;
             at += 2;
         }
         xs.push(x);
@@ -536,11 +590,17 @@ fn parse_simple(data: &[u8], contours: usize, out: &mut Contours) -> Result<()> 
     let mut y = 0f32;
     for &f in &flags {
         if f & Y_SHORT != 0 {
-            let d = *data.get(at).ok_or(Error::OutOfBounds { needed: at + 1, len: data.len() })? as f32;
+            let d = *data.get(at).ok_or(Error::OutOfBounds {
+                needed: at + 1,
+                len: data.len(),
+            })? as f32;
             at += 1;
             y += if f & Y_SAME != 0 { d } else { -d };
         } else if f & Y_SAME == 0 {
-            y += bei16(data, at).ok_or(Error::OutOfBounds { needed: at + 2, len: data.len() })? as f32;
+            y += bei16(data, at).ok_or(Error::OutOfBounds {
+                needed: at + 2,
+                len: data.len(),
+            })? as f32;
             at += 2;
         }
         ys.push(y);
@@ -549,7 +609,11 @@ fn parse_simple(data: &[u8], contours: usize, out: &mut Contours) -> Result<()> 
     let mut start = 0usize;
     for end in ends {
         let contour: Vec<Point> = (start..=end.min(points.saturating_sub(1)))
-            .map(|i| Point { x: xs[i], y: ys[i], on: flags[i] & ON_CURVE != 0 })
+            .map(|i| Point {
+                x: xs[i],
+                y: ys[i],
+                on: flags[i] & ON_CURVE != 0,
+            })
             .collect();
         if contour.len() > 1 {
             out.push(contour);
@@ -562,19 +626,35 @@ fn parse_simple(data: &[u8], contours: usize, out: &mut Contours) -> Result<()> 
 fn parse_composite(face: &Face<'_>, data: &[u8], depth: usize, out: &mut Contours) -> Result<()> {
     let mut at = 10usize;
     loop {
-        let flags = be16(data, at).ok_or(Error::OutOfBounds { needed: at + 2, len: data.len() })?;
-        let gid = be16(data, at + 2).ok_or(Error::OutOfBounds { needed: at + 4, len: data.len() })?;
+        let flags = be16(data, at).ok_or(Error::OutOfBounds {
+            needed: at + 2,
+            len: data.len(),
+        })?;
+        let gid = be16(data, at + 2).ok_or(Error::OutOfBounds {
+            needed: at + 4,
+            len: data.len(),
+        })?;
         at += 4;
         let word = flags & ARG_1_AND_2_ARE_WORDS != 0;
         let (r1, r2) = if word {
-            (be16(data, at).unwrap_or(0) as u32, be16(data, at + 2).unwrap_or(0) as u32)
+            (
+                be16(data, at).unwrap_or(0) as u32,
+                be16(data, at + 2).unwrap_or(0) as u32,
+            )
         } else {
-            (*data.get(at).unwrap_or(&0) as u32, *data.get(at + 1).unwrap_or(&0) as u32)
+            (
+                *data.get(at).unwrap_or(&0) as u32,
+                *data.get(at + 1).unwrap_or(&0) as u32,
+            )
         };
         at += if word { 4 } else { 2 };
         let xy = flags & ARGS_ARE_XY_VALUES != 0;
         // Offset interpretation: signed XY, or unsigned point indices (parent, child).
-        let (sx, sy) = if word { (r1 as u16 as i16 as f32, r2 as u16 as i16 as f32) } else { (r1 as u8 as i8 as f32, r2 as u8 as i8 as f32) };
+        let (sx, sy) = if word {
+            (r1 as u16 as i16 as f32, r2 as u16 as i16 as f32)
+        } else {
+            (r1 as u8 as i8 as f32, r2 as u8 as i8 as f32)
+        };
 
         let (mut a, mut b, mut c, mut d) = (1.0f32, 0.0f32, 0.0f32, 1.0f32);
         if flags & WE_HAVE_A_SCALE != 0 {
@@ -596,13 +676,30 @@ fn parse_composite(face: &Face<'_>, data: &[u8], depth: usize, out: &mut Contour
 
         let mut inner: Contours = glyph_contours_at(face, gid, depth + 1)?
             .into_iter()
-            .map(|contour| contour.into_iter().map(|p| Point { x: a * p.x + c * p.y, y: b * p.x + d * p.y, on: p.on }).collect())
+            .map(|contour| {
+                contour
+                    .into_iter()
+                    .map(|p| Point {
+                        x: a * p.x + c * p.y,
+                        y: b * p.x + d * p.y,
+                        on: p.on,
+                    })
+                    .collect()
+            })
             .collect();
         let (dx, dy) = if xy {
             (sx, sy)
         } else {
-            let parent = out.iter().flatten().nth(r1 as usize).ok_or(Error::BadFont("composite parent point index"))?;
-            let child = inner.iter().flatten().nth(r2 as usize).ok_or(Error::BadFont("composite component point index"))?;
+            let parent = out
+                .iter()
+                .flatten()
+                .nth(r1 as usize)
+                .ok_or(Error::BadFont("composite parent point index"))?;
+            let child = inner
+                .iter()
+                .flatten()
+                .nth(r2 as usize)
+                .ok_or(Error::BadFont("composite component point index"))?;
             (parent.x - child.x, parent.y - child.y)
         };
         for p in inner.iter_mut().flatten() {

@@ -2,9 +2,9 @@
 //!
 //! `cargo run --example author_tysh -- in.psd out.psd runs.json`
 
-use photocraft_psd::descriptor::VersionedDescriptor;
-use photocraft_psd::descriptor::Value as DescValue;
 use photocraft_psd::PsdFile;
+use photocraft_psd::descriptor::Value as DescValue;
+use photocraft_psd::descriptor::VersionedDescriptor;
 use photocraft_text::engine_data::{self, Value};
 use photocraft_text::runs::{self, RunStyle};
 
@@ -23,7 +23,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let spec: Vec<Run> = serde_json::from_str(&std::fs::read_to_string(&a[3])?)?;
     let runs_in: Vec<RunStyle> = spec
         .into_iter()
-        .map(|r| RunStyle { len: r.len, size: r.size, tracking: r.tracking, ..Default::default() })
+        .map(|r| RunStyle {
+            len: r.len,
+            size: r.size,
+            tracking: r.tracking,
+            ..Default::default()
+        })
         .collect();
 
     let layer = file

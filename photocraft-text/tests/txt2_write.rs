@@ -41,7 +41,11 @@ fn assert_single_span(old: &[u8], new: &[u8], start: usize, end: usize, expected
         expected.as_bytes(),
         "span text"
     );
-    assert_eq!(&old[end..], &new[(end as isize + delta) as usize..], "suffix changed");
+    assert_eq!(
+        &old[end..],
+        &new[(end as isize + delta) as usize..],
+        "suffix changed"
+    );
 }
 
 #[test]
@@ -54,11 +58,13 @@ fn every_corpus_run_table_matches_text() {
             continue;
         }
         let bytes = std::fs::read(&path).expect("read psd");
-        let Ok(file) = PsdFile::from_bytes(&bytes) else { continue };
+        let Ok(file) = PsdFile::from_bytes(&bytes) else {
+            continue;
+        };
         for block in file.global_blocks.iter().filter(|b| &b.key == b"Txt2") {
             let data = &block.data;
-            let lengths = txt2::run_lengths(data)
-                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let lengths =
+                txt2::run_lengths(data).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
             assert!(!lengths.is_empty(), "{}: no runs", path.display());
             // Writing the table back unchanged must succeed and be byte-identical.
             let same = txt2::set_run_lengths(data, &lengths)
@@ -148,15 +154,26 @@ fn lead_text_keeps_internal_breaks_and_replaces_whole() {
     assert_eq!(&block[start..start + 2], &[0xfe, 0xff]);
 
     let same = txt2::replace_text(&block, expected).unwrap();
-    assert_eq!(same, block, "replace_text with identical text must be a no-op");
+    assert_eq!(
+        same, block,
+        "replace_text with identical text must be a no-op"
+    );
 }
 
 #[test]
 fn frame_geometry_reads_box_for_left_and_center() {
     use photocraft_text::txt2::FrameGeometry;
-    let want = FrameGeometry { left: 0.0, top: 0.0, right: 430.0, bottom: 200.0 };
+    let want = FrameGeometry {
+        left: 0.0,
+        top: 0.0,
+        right: 430.0,
+        bottom: 200.0,
+    };
     assert_eq!(txt2::frame_geometry(&corpus_block("box_left")), Some(want));
-    assert_eq!(txt2::frame_geometry(&corpus_block("box_center")), Some(want));
+    assert_eq!(
+        txt2::frame_geometry(&corpus_block("box_center")),
+        Some(want)
+    );
 }
 
 #[test]
@@ -168,7 +185,12 @@ fn frame_geometry_none_for_point_text() {
 fn set_frame_geometry_round_trips_and_keeps_text() {
     use photocraft_text::txt2::FrameGeometry;
     let block = corpus_block("box_left");
-    let g = FrameGeometry { left: 10.0, top: 20.5, right: 440.0, bottom: 220.25 };
+    let g = FrameGeometry {
+        left: 10.0,
+        top: 20.5,
+        right: 440.0,
+        bottom: 220.25,
+    };
     let out = txt2::set_frame_geometry(&block, g).unwrap();
     assert_eq!(txt2::frame_geometry(&out), Some(g));
     assert_eq!(txt2::read_text(&out), txt2::read_text(&block));
@@ -201,11 +223,24 @@ fn txt2_run_properties_are_writable() {
         let (s, e) = txt2::value_range(b, &txt2::run_path_for(i)).unwrap();
         String::from_utf8_lossy(&b[s..e]).into_owned()
     };
-    assert!(run(&out, 0).contains("/1 96.0"), "size 96 not written: {}", run(&out, 0));
+    assert!(
+        run(&out, 0).contains("/1 96.0"),
+        "size 96 not written: {}",
+        run(&out, 0)
+    );
     assert!(run(&out, 1).contains("/8 250"), "tracking 250 not written");
-    assert!(run(&out, 1).contains("/7 2.0"), "vertical scale 2.0 not written");
-    assert!(run(&out, 2).contains("/9 12.0"), "baseline shift not written");
-    assert!(run(&out, 2).contains("/6 1.5"), "horizontal scale not written");
+    assert!(
+        run(&out, 1).contains("/7 2.0"),
+        "vertical scale 2.0 not written"
+    );
+    assert!(
+        run(&out, 2).contains("/9 12.0"),
+        "baseline shift not written"
+    );
+    assert!(
+        run(&out, 2).contains("/6 1.5"),
+        "horizontal scale not written"
+    );
     assert!(run(&out, 0).contains("/8 0"), "run 0 tracking changed");
 }
 
@@ -217,19 +252,34 @@ fn clear_cache_empties_only_the_view_layout() {
 
     let out = txt2::clear_cache(&block, 0).expect("clear");
     txt2::tokens(&out).expect("block still parses");
-    assert_eq!(txt2::read_text(&out), txt2::read_text(&block), "text untouched");
-    assert_eq!(txt2::run_lengths(&out).unwrap(), txt2::run_lengths(&block).unwrap());
+    assert_eq!(
+        txt2::read_text(&out),
+        txt2::read_text(&block),
+        "text untouched"
+    );
+    assert_eq!(
+        txt2::run_lengths(&out).unwrap(),
+        txt2::run_lengths(&block).unwrap()
+    );
 
     // The view keeps its `/2` key (Photoshop 2025 crashes without one) and the
     // model keeps the text; only the composed-layout array is emptied.
     let view = txt2::value_range(
         &out,
-        &[Step::Key("1"), Step::Key("1"), Step::Index(0), Step::Key("1")],
+        &[
+            Step::Key("1"),
+            Step::Key("1"),
+            Step::Index(0),
+            Step::Key("1"),
+        ],
     )
     .expect("view");
     let view = String::from_utf8_lossy(&out[view.0..view.1]).into_owned();
     assert!(view.contains("/2 [ ]"), "cache not emptied: {view}");
-    assert!(view.contains("/0 [ << /0 0 >> ]"), "frame index lost: {view}");
+    assert!(
+        view.contains("/0 [ << /0 0 >> ]"),
+        "frame index lost: {view}"
+    );
     assert!(!view.contains("/99 /PC"), "cache content survived");
 }
 
@@ -243,7 +293,12 @@ fn replace_text_changes_length_and_empties_the_cache() {
     assert_eq!(txt2::run_lengths(&out).unwrap(), vec![6]);
     let view = txt2::value_range(
         &out,
-        &[Step::Key("1"), Step::Key("1"), Step::Index(0), Step::Key("1")],
+        &[
+            Step::Key("1"),
+            Step::Key("1"),
+            Step::Index(0),
+            Step::Key("1"),
+        ],
     )
     .expect("view");
     assert!(String::from_utf8_lossy(&out[view.0..view.1]).contains("/2 [ ]"));
@@ -308,8 +363,14 @@ fn fonts_survive_run_layout() {
 fn run_table_bytes_location() {
     let block = corpus_block("plain_latin");
     let (s, e) = txt2::value_range(&block, &txt2::run_path_for(0)).unwrap();
-    eprintln!("run0 at {s}..{e}: {:?}", String::from_utf8_lossy(&block[s.saturating_sub(40)..e.min(block.len())]));
-    eprintln!("font raw at {:?}", block.windows(17).position(|w| w == b"/99 /CoolTypeFont"));
+    eprintln!(
+        "run0 at {s}..{e}: {:?}",
+        String::from_utf8_lossy(&block[s.saturating_sub(40)..e.min(block.len())])
+    );
+    eprintln!(
+        "font raw at {:?}",
+        block.windows(17).position(|w| w == b"/99 /CoolTypeFont")
+    );
 }
 
 /// Parentheses (and backslashes) inside the layer text must be stored with

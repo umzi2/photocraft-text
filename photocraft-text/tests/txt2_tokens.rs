@@ -3,7 +3,9 @@
 use photocraft_psd::PsdFile;
 
 fn txt2_blocks(psd: &[u8]) -> Vec<Vec<u8>> {
-    let Ok(file) = PsdFile::from_bytes(psd) else { return Vec::new() };
+    let Ok(file) = PsdFile::from_bytes(psd) else {
+        return Vec::new();
+    };
     file.global_blocks
         .iter()
         .filter(|b| &b.key == b"Txt2")

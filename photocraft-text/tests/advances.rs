@@ -45,7 +45,9 @@ fn advances_match_photoshop_pdf() {
     let mut prev: Option<u16> = None;
     for (i, expected) in fixture.glyphs.iter().enumerate() {
         let ch = expected.ch.chars().next().unwrap();
-        let gid = face.glyph_index(ch).unwrap_or_else(|| panic!("no glyph for {ch:?}"));
+        let gid = face
+            .glyph_index(ch)
+            .unwrap_or_else(|| panic!("no glyph for {ch:?}"));
         if let Some(p) = prev {
             pen += face.kern_pair(p, gid) as f32 * scale;
         }

@@ -9,7 +9,7 @@
 
 use photocraft_psd::builder::{LayerSpec, PixelData, PsdBuilder};
 use photocraft_psd::{ColorMode, Compression};
-use photocraft_text::area::{layout_area, Justification, ParagraphStyle};
+use photocraft_text::area::{Justification, ParagraphStyle, layout_area};
 use photocraft_text::font::Face;
 use photocraft_text::layout::TextStyle;
 use photocraft_text::outline::glyph_contours;
@@ -74,7 +74,11 @@ fn background(seed: u32) -> Canvas {
         let cx = fx - 0.5;
         let cy = fy - 0.5;
         let v = 1.0 - 0.5 * (cx * cx + cy * cy).sqrt() * 1.3;
-        [ (r * v).clamp(0.0, 255.0) as u8, (g * v).clamp(0.0, 255.0) as u8, (b * v).clamp(0.0, 255.0) as u8 ]
+        [
+            (r * v).clamp(0.0, 255.0) as u8,
+            (g * v).clamp(0.0, 255.0) as u8,
+            (b * v).clamp(0.0, 255.0) as u8,
+        ]
     });
     canvas
 }
@@ -88,7 +92,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let font_bytes = std::fs::read(&args[1])?;
     let prefix = args[2].clone();
     let count: usize = args.get(3).and_then(|v| v.parse().ok()).unwrap_or(4);
-    let seed: u32 = args.get(4).and_then(|v| v.parse().ok()).unwrap_or(0x51ee_d0);
+    let seed: u32 = args
+        .get(4)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0x51ee_d0);
     let face = Face::parse(&font_bytes)?;
     let upm = face.units_per_em() as f32;
     let ascender = photocraft_text::area::first_baseline_ratio(&face);
@@ -108,11 +115,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ]);
         let tracking = rng.pick(&[0i16, 0, 20, -15, 50]);
         let text = rng.pick(&TEXTS);
-        let color: [u8; 3] = rng.pick(&[[27, 27, 27], [248, 244, 232], [43, 29, 58], [255, 255, 255], [255, 92, 51]]);
+        let color: [u8; 3] = rng.pick(&[
+            [27, 27, 27],
+            [248, 244, 232],
+            [43, 29, 58],
+            [255, 255, 255],
+            [255, 92, 51],
+        ]);
         let leading = size * rng.pick(&[1.2f32, 1.35, 1.6]);
 
-        let style = TextStyle { size, tracking, leading: Some(leading), ..Default::default() };
-        let para = ParagraphStyle { justification, ..Default::default() };
+        let style = TextStyle {
+            size,
+            tracking,
+            leading: Some(leading),
+            ..Default::default()
+        };
+        let para = ParagraphStyle {
+            justification,
+            ..Default::default()
+        };
         let layout = layout_area(&face, text, &style, &para, box_w, box_h, (x, y), ascender);
 
         let bg_seed = seed.wrapping_add(i as u32).wrapping_mul(2_654_435_761);
@@ -140,7 +161,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .depth(8)
             .compression(Compression::Rle)
             .resolution(72.0);
-        bg.push_layer(LayerSpec::new("background", 0, 0, W, H, PixelData::Rgba8(bg_pixels.clone())));
+        bg.push_layer(LayerSpec::new(
+            "background",
+            0,
+            0,
+            W,
+            H,
+            PixelData::Rgba8(bg_pixels.clone()),
+        ));
         bg.composite(PixelData::Rgba8(bg_pixels));
         std::fs::write(format!("{prefix}_{i}_bg.psd"), bg.to_bytes()?)?;
 
@@ -150,7 +178,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .depth(8)
             .compression(Compression::Rle)
             .resolution(72.0);
-        builder.push_layer(LayerSpec::new("render", 0, 0, W, H, PixelData::Rgba8(canvas.pixels.clone())));
+        builder.push_layer(LayerSpec::new(
+            "render",
+            0,
+            0,
+            W,
+            H,
+            PixelData::Rgba8(canvas.pixels.clone()),
+        ));
         builder.composite(PixelData::Rgba8(canvas.pixels.clone()));
         let bytes = builder.to_bytes()?;
         std::fs::write(&out, &bytes)?;

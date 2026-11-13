@@ -8,7 +8,9 @@ use photocraft_text::engine_data;
 use photocraft_text::runs;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = std::env::args().nth(1).ok_or("usage: layer_debug <in.psd>")?;
+    let path = std::env::args()
+        .nth(1)
+        .ok_or("usage: layer_debug <in.psd>")?;
     let bytes = std::fs::read(&path)?;
     let file = PsdFile::from_bytes(&bytes)?;
     let layer = file
@@ -16,7 +18,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .find(|l| l.blocks.iter().any(|b| &b.key == b"TySh"))
         .ok_or("no text layer")?;
-    let block = layer.blocks.iter().find(|b| &b.key == b"TySh").ok_or("no TySh")?;
+    let block = layer
+        .blocks
+        .iter()
+        .find(|b| &b.key == b"TySh")
+        .ok_or("no TySh")?;
     let (desc, _) = VersionedDescriptor::parse_prefix(&block.data[52..])?;
     let Some(DescValue::RawData(raw)) = desc.descriptor.get("EngineData") else {
         return Err("no EngineData".into());
@@ -42,7 +48,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .find(|b| &b.key == b"Txt2")
         .and_then(|b| photocraft_text::txt2::frame_geometry(&b.data));
-    println!("frame {:?}", frame.map(|f| (f.left, f.top, f.right, f.bottom)));
+    println!(
+        "frame {:?}",
+        frame.map(|f| (f.left, f.top, f.right, f.bottom))
+    );
     let editor = ed
         .get("EngineDict")
         .and_then(|e| e.get("Editor"))
@@ -67,7 +76,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (0.0, 0.0),
     )?;
     if let Some(home) = std::env::var_os("HOME") {
-        let dir = std::path::PathBuf::from(home).join(".local/share/photocraft/wine/drive_c/windows/Fonts");
+        let dir = std::path::PathBuf::from(home)
+            .join(".local/share/photocraft/wine/drive_c/windows/Fonts");
         let path = dir.join("NotoSans-Regular.ttf");
         if let Ok(bytes) = std::fs::read(&path) {
             let face = photocraft_text::font::Face::parse(&bytes)?;
@@ -81,7 +91,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!(
         "render {}x{} offset {:?} (implied ascent {})",
-        pixels.width, pixels.height, pixels.offset,
+        pixels.width,
+        pixels.height,
+        pixels.offset,
         -(pixels.offset.1)
     );
     Ok(())

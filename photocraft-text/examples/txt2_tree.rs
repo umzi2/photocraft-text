@@ -5,7 +5,14 @@
 use photocraft_psd::PsdFile;
 use photocraft_text::txt2::{self, Kind};
 
-fn walk(block: &[u8], toks: &[txt2::Token], i: &mut usize, depth: usize, max: usize, out: &mut String) {
+fn walk(
+    block: &[u8],
+    toks: &[txt2::Token],
+    i: &mut usize,
+    depth: usize,
+    max: usize,
+    out: &mut String,
+) {
     let t = &toks[*i];
     let text = String::from_utf8_lossy(&block[t.start..t.end]);
     let short: String = text.chars().take(60).collect();
@@ -21,7 +28,12 @@ fn walk(block: &[u8], toks: &[txt2::Token], i: &mut usize, depth: usize, max: us
             }
             if *i < toks.len() {
                 let c = &toks[*i];
-                out.push_str(&format!("{:indent$}{}\n", "", String::from_utf8_lossy(&block[c.start..c.end]), indent = depth * 2));
+                out.push_str(&format!(
+                    "{:indent$}{}\n",
+                    "",
+                    String::from_utf8_lossy(&block[c.start..c.end]),
+                    indent = depth * 2
+                ));
             }
         }
         _ => {

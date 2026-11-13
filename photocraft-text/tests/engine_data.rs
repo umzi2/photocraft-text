@@ -1,6 +1,6 @@
 //! EngineData round-trip against blobs written by Photoshop itself.
 
-use photocraft_text::engine_data::{parse, write, Value};
+use photocraft_text::engine_data::{Value, parse, write};
 
 fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(format!("tests/data/{name}_engine_data.txt")).unwrap()
@@ -23,8 +23,15 @@ fn parses_photoshop_engine_data() {
         .and_then(|r| r.get("FontSet"))
         .and_then(Value::as_array)
         .expect("FontSet");
-    let names: Vec<&str> = fonts.iter().filter_map(|f| f.get("Name")).filter_map(Value::as_str).collect();
-    assert_eq!(names, ["NotoSans-Regular", "MyriadPro-Regular", "AdobeInvisFont"]);
+    let names: Vec<&str> = fonts
+        .iter()
+        .filter_map(|f| f.get("Name"))
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(
+        names,
+        ["NotoSans-Regular", "MyriadPro-Regular", "AdobeInvisFont"]
+    );
 
     let style = engine
         .get("StyleRun")
@@ -36,7 +43,10 @@ fn parses_photoshop_engine_data() {
         .expect("style sheet data");
     assert_eq!(style.get("FontSize").and_then(Value::as_f32), Some(48.0));
     assert_eq!(style.get("Font").and_then(Value::as_i64), Some(0));
-    assert_eq!(style.get("AutoKerning").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        style.get("AutoKerning").and_then(Value::as_bool),
+        Some(true)
+    );
 
     let para = engine
         .get("ParagraphRun")

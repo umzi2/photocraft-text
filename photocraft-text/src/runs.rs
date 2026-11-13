@@ -48,6 +48,10 @@ pub struct RunStyle {
     pub strikethrough: bool,
     pub all_caps: bool,
     pub small_caps: bool,
+    /// Old-style figures. `EngineData` has no key for this feature (Photoshop
+    /// writes it only to `Txt2` `/6/30`, measured "on" value 2); the renderer
+    /// starts with `false` and a caller that can read `Txt2` sets it.
+    pub old_style: bool,
     /// `Ligatures`; `None` keeps the sheet's value.
     pub ligatures: Option<bool>,
     /// `DLigatures` (Photoshop's "alternate ligatures"); `None` keeps it.
@@ -63,8 +67,9 @@ pub struct RunStyle {
 
 /// One paragraph run: `len` UTF-16 code units sharing paragraph formatting.
 /// Indents and spacing are points; `auto_leading` is a multiplier of size.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct ParagraphRun {
+    /// UTF-16 code units covered by the run, paragraph separators included.
     pub len: usize,
     /// `[min desired max]` word spacing, fractions of the space width.
     pub word_spacing: [f32; 3],
@@ -82,6 +87,20 @@ pub struct ParagraphRun {
     /// `EveryLineComposer`: Photoshop's "Adobe Every-line Composer" instead of
     /// the default single-line (greedy) composer.
     pub every_line_composer: bool,
+    /// `Hanging`: optical margin alignment (hanging punctuation).
+    pub hanging: bool,
+    /// `AutoHyphenate`.
+    pub hyphenate: bool,
+    /// `HyphenatedWordSize`: hyphenate words longer than this.
+    pub words_longer_than: i64,
+    /// `PreHyphen`: characters required before the hyphen.
+    pub pre_hyphen: i64,
+    /// `PostHyphen`: characters required after the hyphen.
+    pub post_hyphen: i64,
+    /// `ConsecutiveHyphens`: maximum consecutive hyphenated lines.
+    pub consecutive_hyphens: i64,
+    /// `Zone`: hyphenation zone in points.
+    pub hyphen_zone: f32,
 }
 
 // --------------------------------------------------------------------------- //
@@ -90,7 +109,9 @@ pub struct ParagraphRun {
 
 /// Writes the layer's antialias mode (`EngineDict/AntiAlias`).
 pub fn set_antialias(root: &mut Value, aa: crate::raster::AntiAlias) -> bool {
-    let Some(engine) = root.get_mut("EngineDict") else { return false };
+    let Some(engine) = root.get_mut("EngineDict") else {
+        return false;
+    };
     match engine {
         Value::Dict(entries) => {
             let value = Value::Int(aa.code());
@@ -106,11 +127,16 @@ pub fn set_antialias(root: &mut Value, aa: crate::raster::AntiAlias) -> bool {
 
 /// Writes `EngineDict/UseFractionalGlyphWidths` (Photoshop's "Fractional Widths").
 pub fn set_fractional_glyph_widths(root: &mut Value, on: bool) -> bool {
-    let Some(engine) = root.get_mut("EngineDict") else { return false };
+    let Some(engine) = root.get_mut("EngineDict") else {
+        return false;
+    };
     match engine {
         Value::Dict(entries) => {
             let value = Value::Bool(on);
-            match entries.iter_mut().find(|(k, _)| k == "UseFractionalGlyphWidths") {
+            match entries
+                .iter_mut()
+                .find(|(k, _)| k == "UseFractionalGlyphWidths")
+            {
                 Some((_, slot)) => *slot = value,
                 None => entries.push(("UseFractionalGlyphWidths".to_string(), value)),
             }
@@ -125,16 +151,24 @@ pub fn apply_paragraph_runs(root: &mut Value, paras: &[ParagraphRun]) -> bool {
     if paras.is_empty() {
         return false;
     }
-    let Some(engine) = root.get_mut("EngineDict") else { return false };
-    let Some(run) = engine.get_mut("ParagraphRun") else { return false };
+    let Some(engine) = root.get_mut("EngineDict") else {
+        return false;
+    };
+    let Some(run) = engine.get_mut("ParagraphRun") else {
+        return false;
+    };
     if let Some(lengths) = run.get_mut("RunLengthArray").and_then(Value::as_array_mut) {
         lengths.clear();
         lengths.extend(paras.iter().map(|p| Value::Int(p.len as i64)));
     } else {
         return false;
     }
-    let Some(items) = run.get_mut("RunArray").and_then(Value::as_array_mut) else { return false };
-    let Some(template) = items.first().cloned() else { return false };
+    let Some(items) = run.get_mut("RunArray").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let Some(template) = items.first().cloned() else {
+        return false;
+    };
     items.clear();
     for p in paras {
         let mut item = template.clone();
@@ -147,8 +181,14 @@ pub fn apply_paragraph_runs(root: &mut Value, paras: &[ParagraphRun]) -> bool {
                 Some((_, slot)) => *slot = value,
                 None => props.push((key.to_owned(), value)),
             };
-            put("Justification", Value::Int(justification_code(p.justification)));
-            put("FirstLineIndent", Value::Float(f64::from(p.first_line_indent)));
+            put(
+                "Justification",
+                Value::Int(justification_code(p.justification)),
+            );
+            put(
+                "FirstLineIndent",
+                Value::Float(f64::from(p.first_line_indent)),
+            );
             put("StartIndent", Value::Float(f64::from(p.start_indent)));
             put("EndIndent", Value::Float(f64::from(p.end_indent)));
             put("SpaceBefore", Value::Float(f64::from(p.space_before)));
@@ -158,6 +198,13 @@ pub fn apply_paragraph_runs(root: &mut Value, paras: &[ParagraphRun]) -> bool {
             put("GlyphSpacing", triple(p.glyph_scaling));
             put("AutoLeading", Value::Float(f64::from(p.auto_leading)));
             put("EveryLineComposer", Value::Bool(p.every_line_composer));
+            put("Hanging", Value::Bool(p.hanging));
+            put("AutoHyphenate", Value::Bool(p.hyphenate));
+            put("HyphenatedWordSize", Value::Int(p.words_longer_than));
+            put("PreHyphen", Value::Int(p.pre_hyphen));
+            put("PostHyphen", Value::Int(p.post_hyphen));
+            put("ConsecutiveHyphens", Value::Int(p.consecutive_hyphens));
+            put("Zone", Value::Float(f64::from(p.hyphen_zone)));
         }
         items.push(item);
     }
@@ -191,8 +238,15 @@ pub fn from_engine_data(root: &Value) -> Vec<RunStyle> {
     };
     let fonts = font_names(root);
     let lens = run_lengths(style_run.get("RunLengthArray"));
-    let items = style_run.get("RunArray").and_then(Value::as_array).unwrap_or(&[]);
-    items.iter().zip(lens).map(|(item, len)| parse_style_run(item, len, &fonts)).collect()
+    let items = style_run
+        .get("RunArray")
+        .and_then(Value::as_array)
+        .unwrap_or(&[]);
+    items
+        .iter()
+        .zip(lens)
+        .map(|(item, len)| parse_style_run(item, len, &fonts))
+        .collect()
 }
 
 /// The layer's antialiasing mode (`EngineDict/AntiAlias`), default sharp.
@@ -210,8 +264,15 @@ pub fn paragraphs_from_engine_data(root: &Value) -> Vec<ParagraphRun> {
         return Vec::new();
     };
     let lens = run_lengths(para_run.get("RunLengthArray"));
-    let items = para_run.get("RunArray").and_then(Value::as_array).unwrap_or(&[]);
-    items.iter().zip(lens).map(|(item, len)| parse_paragraph_run(item, len)).collect()
+    let items = para_run
+        .get("RunArray")
+        .and_then(Value::as_array)
+        .unwrap_or(&[]);
+    items
+        .iter()
+        .zip(lens)
+        .map(|(item, len)| parse_paragraph_run(item, len))
+        .collect()
 }
 
 fn font_names(root: &Value) -> Vec<String> {
@@ -258,32 +319,57 @@ pub fn apply_style_runs(root: &mut Value, styles: &[RunStyle]) -> bool {
     if styles.is_empty() {
         return false;
     }
-    let Some(engine) = root.get_mut("EngineDict") else { return false };
-    let Some(style_run) = engine.get_mut("StyleRun") else { return false };
-    if let Some(lengths) = style_run.get_mut("RunLengthArray").and_then(Value::as_array_mut) {
+    let Some(engine) = root.get_mut("EngineDict") else {
+        return false;
+    };
+    let Some(style_run) = engine.get_mut("StyleRun") else {
+        return false;
+    };
+    if let Some(lengths) = style_run
+        .get_mut("RunLengthArray")
+        .and_then(Value::as_array_mut)
+    {
         lengths.clear();
         lengths.extend(styles.iter().map(|r| Value::Int(r.len as i64)));
     } else {
         return false;
     }
-    let Some(items) = style_run.get_mut("RunArray").and_then(Value::as_array_mut) else { return false };
-    let Some(template) = items.first().cloned() else { return false };
+    let Some(items) = style_run.get_mut("RunArray").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let Some(template) = items.first().cloned() else {
+        return false;
+    };
     items.clear();
     for run in styles {
         let mut item = template.clone();
-        if let Some(sheet) = item.get_mut("StyleSheet").and_then(|s| s.get_mut("StyleSheetData")).and_then(Value::as_dict_mut) {
-            let mut put = |key: &str, value: Value| {
-                match sheet.iter_mut().find(|(k, _)| k == key) {
-                    Some((_, slot)) => *slot = value,
-                    None => sheet.push((key.to_owned(), value)),
-                }
+        if let Some(sheet) = item
+            .get_mut("StyleSheet")
+            .and_then(|s| s.get_mut("StyleSheetData"))
+            .and_then(Value::as_dict_mut)
+        {
+            let mut put = |key: &str, value: Value| match sheet.iter_mut().find(|(k, _)| k == key) {
+                Some((_, slot)) => *slot = value,
+                None => sheet.push((key.to_owned(), value)),
             };
-            if let Some(i) = run.font_index { put("Font", Value::Int(i)); }
-            if let Some(v) = run.size { put("FontSize", Value::Float(f64::from(v))); }
-            if let Some(v) = run.horizontal_scale { put("HorizontalScale", Value::Float(f64::from(v))); }
-            if let Some(v) = run.vertical_scale { put("VerticalScale", Value::Float(f64::from(v))); }
-            if let Some(v) = run.tracking { put("Tracking", Value::Int(i64::from(v))); }
-            if let Some(v) = run.baseline_shift { put("BaselineShift", Value::Float(f64::from(v))); }
+            if let Some(i) = run.font_index {
+                put("Font", Value::Int(i));
+            }
+            if let Some(v) = run.size {
+                put("FontSize", Value::Float(f64::from(v)));
+            }
+            if let Some(v) = run.horizontal_scale {
+                put("HorizontalScale", Value::Float(f64::from(v)));
+            }
+            if let Some(v) = run.vertical_scale {
+                put("VerticalScale", Value::Float(f64::from(v)));
+            }
+            if let Some(v) = run.tracking {
+                put("Tracking", Value::Int(i64::from(v)));
+            }
+            if let Some(v) = run.baseline_shift {
+                put("BaselineShift", Value::Float(f64::from(v)));
+            }
             if let Some(auto) = run.auto_leading_flag() {
                 put("AutoLeading", Value::Bool(auto));
             }
@@ -330,7 +416,10 @@ pub fn apply_style_runs(root: &mut Value, styles: &[RunStyle]) -> bool {
                     Value::Float(f64::from(g) / 255.0),
                     Value::Float(f64::from(b) / 255.0),
                 ]);
-                put("FillColor", Value::dict([("Type", Value::Int(1)), ("Values", values)]));
+                put(
+                    "FillColor",
+                    Value::dict([("Type", Value::Int(1)), ("Values", values)]),
+                );
             }
         }
         items.push(item);
@@ -339,7 +428,10 @@ pub fn apply_style_runs(root: &mut Value, styles: &[RunStyle]) -> bool {
 }
 
 fn parse_style_run(item: &Value, len: usize, fonts: &[String]) -> RunStyle {
-    let sheet = item.get("StyleSheet").and_then(|s| s.get("StyleSheetData")).cloned();
+    let sheet = item
+        .get("StyleSheet")
+        .and_then(|s| s.get("StyleSheetData"))
+        .cloned();
     let get = |key: &str| sheet.as_ref().and_then(|d| d.get(key));
 
     let font_index = get("Font").and_then(Value::as_i64);
@@ -355,23 +447,33 @@ fn parse_style_run(item: &Value, len: usize, fonts: &[String]) -> RunStyle {
         font_index,
         size: get("FontSize").and_then(Value::as_f32),
         color: get("FillColor").and_then(color_rgb),
-        tracking: get("Tracking").and_then(Value::as_i64).and_then(|v| i16::try_from(v).ok()),
+        tracking: get("Tracking")
+            .and_then(Value::as_i64)
+            .and_then(|v| i16::try_from(v).ok()),
         baseline_shift: get("BaselineShift").and_then(Value::as_f32),
         horizontal_scale: get("HorizontalScale").and_then(Value::as_f32),
         vertical_scale: get("VerticalScale").and_then(Value::as_f32),
         auto_kerning: get("AutoKerning").and_then(Value::as_bool),
-        kerning: get("Kerning").and_then(Value::as_i64).and_then(|v| i16::try_from(v).ok()),
+        kerning: get("Kerning")
+            .and_then(Value::as_i64)
+            .and_then(|v| i16::try_from(v).ok()),
         leading: get("Leading").and_then(Value::as_f32),
         auto_leading: get("AutoLeading").and_then(Value::as_bool),
         faux_bold: get("FauxBold").and_then(Value::as_bool).unwrap_or(false),
         faux_italic: get("FauxItalic").and_then(Value::as_bool).unwrap_or(false),
         underline: get("Underline").and_then(Value::as_bool).unwrap_or(false),
-        strikethrough: get("Strikethrough").and_then(Value::as_bool).unwrap_or(false),
+        strikethrough: get("Strikethrough")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         all_caps: caps == CAPS_ALL,
         small_caps: caps == CAPS_SMALL,
+        // Only `Txt2` carries old-style figures; `EngineData` never does.
+        old_style: false,
         ligatures: get("Ligatures").and_then(Value::as_bool),
         alternate_ligatures: get("DLigatures").and_then(Value::as_bool),
-        language: get("Language").and_then(Value::as_i64).and_then(txt2_language),
+        language: get("Language")
+            .and_then(Value::as_i64)
+            .and_then(txt2_language),
         no_break: get("NoBreak").and_then(Value::as_bool),
         sheet,
     }
@@ -393,12 +495,15 @@ fn parse_paragraph_run(item: &Value, len: usize) -> ParagraphRun {
             })
             .unwrap_or(fallback)
     };
+    let int = |key: &str, fallback: i64| get(key).and_then(Value::as_i64).unwrap_or(fallback);
     ParagraphRun {
         len,
         word_spacing: triple("WordSpacing", [0.8, 1.0, 1.33]),
         letter_spacing: triple("LetterSpacing", [0.0, 0.0, 0.0]),
         glyph_scaling: triple("GlyphScaling", [1.0, 1.0, 1.0]),
-        justification: Justification::from_psd(get("Justification").and_then(Value::as_i64).unwrap_or(0) as i32),
+        justification: Justification::from_psd(
+            get("Justification").and_then(Value::as_i64).unwrap_or(0) as i32,
+        ),
         every_line_composer: matches!(get("EveryLineComposer"), Some(Value::Bool(true))),
         first_line_indent: num("FirstLineIndent"),
         start_indent: num("StartIndent"),
@@ -406,6 +511,13 @@ fn parse_paragraph_run(item: &Value, len: usize) -> ParagraphRun {
         space_before: num("SpaceBefore"),
         space_after: num("SpaceAfter"),
         auto_leading: get("AutoLeading").and_then(Value::as_f32).unwrap_or(1.2),
+        hanging: matches!(get("Hanging"), Some(Value::Bool(true))),
+        hyphenate: matches!(get("AutoHyphenate"), Some(Value::Bool(true))),
+        words_longer_than: int("HyphenatedWordSize", 6),
+        pre_hyphen: int("PreHyphen", 2),
+        post_hyphen: int("PostHyphen", 2),
+        consecutive_hyphens: int("ConsecutiveHyphens", 8),
+        hyphen_zone: get("Zone").and_then(Value::as_f32).unwrap_or(36.0),
     }
 }
 
@@ -503,10 +615,18 @@ impl ParagraphFormat {
 /// the whole layer can pass one [`ParagraphFormat`]. Returns false when the
 /// tree has no paragraph runs.
 pub fn apply_paragraph_formats(root: &mut Value, formats: &[ParagraphFormat]) -> bool {
-    let Some(first) = formats.first().copied() else { return false };
-    let Some(engine) = root.get_mut("EngineDict") else { return false };
-    let Some(run) = engine.get_mut("ParagraphRun") else { return false };
-    let Some(items) = run.get_mut("RunArray").and_then(Value::as_array_mut) else { return false };
+    let Some(first) = formats.first().copied() else {
+        return false;
+    };
+    let Some(engine) = root.get_mut("EngineDict") else {
+        return false;
+    };
+    let Some(run) = engine.get_mut("ParagraphRun") else {
+        return false;
+    };
+    let Some(items) = run.get_mut("RunArray").and_then(Value::as_array_mut) else {
+        return false;
+    };
     for (i, item) in items.iter_mut().enumerate() {
         let format = formats.get(i).copied().unwrap_or(first);
         let Some(props) = item
@@ -531,18 +651,22 @@ pub fn paragraph_formats_from_engine_data(root: &Value) -> Vec<ParagraphFormat> 
     let Some(para_run) = root.get("EngineDict").and_then(|e| e.get("ParagraphRun")) else {
         return Vec::new();
     };
-    let items = para_run.get("RunArray").and_then(Value::as_array).unwrap_or(&[]);
+    let items = para_run
+        .get("RunArray")
+        .and_then(Value::as_array)
+        .unwrap_or(&[]);
     items
         .iter()
         .map(|item| {
             let props = item.get("ParagraphSheet").and_then(|s| s.get("Properties"));
             let get = |key: &str| props.and_then(|d| d.get(key));
-            let int = |key: &str, fallback: i64| {
-                get(key).and_then(Value::as_i64).unwrap_or(fallback)
-            };
+            let int =
+                |key: &str, fallback: i64| get(key).and_then(Value::as_i64).unwrap_or(fallback);
             let default = ParagraphFormat::default();
             ParagraphFormat {
-                hyphenate: get("AutoHyphenate").and_then(Value::as_bool).unwrap_or(default.hyphenate),
+                hyphenate: get("AutoHyphenate")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(default.hyphenate),
                 words_longer_than: int("HyphenatedWordSize", default.words_longer_than),
                 after_first: int("PreHyphen", default.after_first),
                 before_last: int("PostHyphen", default.before_last),
@@ -557,7 +681,8 @@ pub fn paragraph_formats_from_engine_data(root: &Value) -> Vec<ParagraphFormat> 
 }
 
 /// `FillColor` is `<< /Type 1 /Values [ alpha r g b ] >>` with components in 0..1.
-fn color_rgb(value: &Value) -> Option<[u8; 3]> {    if value.get("Type").and_then(Value::as_i64) != Some(COLOR_TYPE_RGB) {
+fn color_rgb(value: &Value) -> Option<[u8; 3]> {
+    if value.get("Type").and_then(Value::as_i64) != Some(COLOR_TYPE_RGB) {
         return None;
     }
     let values = value.get("Values").and_then(Value::as_array)?;
@@ -678,19 +803,33 @@ fn put_caps(d: &mut Vec<(String, Value)>, all: bool, small: bool) {
 }
 
 fn put_color(d: &mut Vec<(String, Value)>, key: &str, rgb: [u8; 3]) {
-    if d.iter().find(|(k, _)| k == key).and_then(|(_, v)| color_rgb(v)) == Some(rgb) {
+    if d.iter()
+        .find(|(k, _)| k == key)
+        .and_then(|(_, v)| color_rgb(v))
+        == Some(rgb)
+    {
         return;
     }
     let comp = |c: u8| Value::Float(c as f64 / 255.0);
     let color = Value::dict([
         ("Type", Value::Int(COLOR_TYPE_RGB)),
-        ("Values", Value::Array(vec![Value::Float(1.0), comp(rgb[0]), comp(rgb[1]), comp(rgb[2])])),
+        (
+            "Values",
+            Value::Array(vec![
+                Value::Float(1.0),
+                comp(rgb[0]),
+                comp(rgb[1]),
+                comp(rgb[2]),
+            ]),
+        ),
     ]);
     put(d, key, color);
 }
 
 fn get_int(d: &[(String, Value)], key: &str) -> Option<i64> {
-    d.iter().find(|(k, _)| k == key).and_then(|(_, v)| v.as_i64())
+    d.iter()
+        .find(|(k, _)| k == key)
+        .and_then(|(_, v)| v.as_i64())
 }
 
 fn put(d: &mut Vec<(String, Value)>, key: &str, value: Value) {
@@ -706,7 +845,11 @@ fn put(d: &mut Vec<(String, Value)>, key: &str, value: Value) {
 
 /// Writes a float unless the stored value already equals `v` at f32 precision.
 fn put_num(d: &mut Vec<(String, Value)>, key: &str, v: f32) {
-    if d.iter().find(|(k, _)| k == key).and_then(|(_, x)| x.as_f32()) == Some(v) {
+    if d.iter()
+        .find(|(k, _)| k == key)
+        .and_then(|(_, x)| x.as_f32())
+        == Some(v)
+    {
         return;
     }
     put(d, key, Value::Float(v as f64));
@@ -716,7 +859,15 @@ fn put_num(d: &mut Vec<(String, Value)>, key: &str, v: f32) {
 fn default_sheet() -> Vec<(String, Value)> {
     let black = Value::dict([
         ("Type", Value::Int(COLOR_TYPE_RGB)),
-        ("Values", Value::Array(vec![Value::Float(1.0), Value::Float(0.0), Value::Float(0.0), Value::Float(0.0)])),
+        (
+            "Values",
+            Value::Array(vec![
+                Value::Float(1.0),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.0),
+            ]),
+        ),
     ]);
     let entries: Vec<(&str, Value)> = vec![
         ("Font", Value::Int(0)),
@@ -748,7 +899,10 @@ fn default_sheet() -> Vec<(String, Value)> {
         ("HindiNumbers", Value::Bool(false)),
         ("Kashida", Value::Int(1)),
     ];
-    entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+    entries
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect()
 }
 
 // --------------------------------------------------------------------------- //
@@ -767,7 +921,10 @@ impl<'a> FontSet<'a> {
         let name = name.into();
         let mut faces = BTreeMap::new();
         faces.insert(name.clone(), face);
-        Self { default: name, faces }
+        Self {
+            default: name,
+            faces,
+        }
     }
 
     pub fn insert(&mut self, name: impl Into<String>, face: Face<'a>) {
@@ -799,9 +956,12 @@ pub struct ShapedGlyph {
     pub color: Option<[u8; 3]>,
 }
 
-/// Small caps: lowercase letters set at this fraction of the run size.
-/// [INFERENCE] Photoshop default; not measured.
-pub const SMALL_CAPS_SCALE: f32 = 0.7;
+/// Small caps: lowercase letters set (synthetically) at this fraction of the
+/// run size. Measured on `10_all_features.psd` layer `15 small caps old style
+/// 0123456789`: with old-style figures the raster is 417 px wide at 26 pt, and
+/// the lower-case letters account for exactly 0.8 of their capital advances
+/// (0.7 predicts 393 px, 0.8 predicts 417 px; the raster matches at 417).
+pub const SMALL_CAPS_SCALE: f32 = 0.8;
 
 /// Per-glyph attributes that never change pen positions. Glyph height and
 /// skew are applied by the rasteriser.
@@ -834,25 +994,51 @@ pub struct GlyphAttrs {
 ///
 /// Panics if the run lengths do not cover the text in UTF-16 units, or a run
 /// names a font missing from `faces`: both are caller errors.
-pub fn shape_runs_attrs(faces: &FontSet<'_>, text: &str, runs: &[RunStyle], style: &TextStyle) -> Vec<(GlyphPos, GlyphAttrs)> {
+pub fn shape_runs_attrs(
+    faces: &FontSet<'_>,
+    text: &str,
+    runs: &[RunStyle],
+    style: &TextStyle,
+) -> Vec<(GlyphPos, GlyphAttrs)> {
     let text_units = text.encode_utf16().count();
     let run_units: usize = runs.iter().map(|r| r.len).sum();
-    assert_eq!(run_units, text_units, "run lengths cover {run_units} UTF-16 units, text has {text_units}");
+    assert_eq!(
+        run_units, text_units,
+        "run lengths cover {run_units} UTF-16 units, text has {text_units}"
+    );
 
     let items = collect_items(faces, text, runs);
     let spans = substitute(faces, &items);
     layout_glyphs(faces, runs, style, &items, &spans)
 }
 
-pub fn shape_runs(faces: &FontSet<'_>, text: &str, runs: &[RunStyle], style: &TextStyle) -> Vec<GlyphPos> {
-    shape_runs_attrs(faces, text, runs, style).into_iter().map(|(g, _)| g).collect()
+pub fn shape_runs(
+    faces: &FontSet<'_>,
+    text: &str,
+    runs: &[RunStyle],
+    style: &TextStyle,
+) -> Vec<GlyphPos> {
+    shape_runs_attrs(faces, text, runs, style)
+        .into_iter()
+        .map(|(g, _)| g)
+        .collect()
 }
 
 /// Like [`shape_runs`], but keeps the run index, colour and vertical scale.
-pub fn shape_runs_detailed(faces: &FontSet<'_>, text: &str, runs: &[RunStyle], style: &TextStyle) -> Vec<ShapedGlyph> {
+pub fn shape_runs_detailed(
+    faces: &FontSet<'_>,
+    text: &str,
+    runs: &[RunStyle],
+    style: &TextStyle,
+) -> Vec<ShapedGlyph> {
     shape_runs_attrs(faces, text, runs, style)
         .into_iter()
-        .map(|(glyph, a)| ShapedGlyph { glyph, run: a.run, vertical_scale: a.vertical_scale, color: runs[a.run].color })
+        .map(|(glyph, a)| ShapedGlyph {
+            glyph,
+            run: a.run,
+            vertical_scale: a.vertical_scale,
+            color: runs[a.run].color,
+        })
         .collect()
 }
 
@@ -890,15 +1076,63 @@ fn collect_items<'a>(faces: &'a FontSet<'_>, text: &str, runs: &'a [RunStyle]) -
         let (ligatures, dligatures) = ligature_flags(run);
         let mapped: Vec<(char, bool)> = if run.all_caps {
             ch.to_uppercase().map(|u| (u, false)).collect()
-        } else if run.small_caps && ch.is_lowercase() {
-            ch.to_uppercase().map(|u| (u, true)).collect()
         } else {
             vec![(ch, false)]
         };
-        for (c, small) in mapped {
-            if let Some(gid) = face.glyph_index(c) {
-                items.push(Item { gid, ch: c, run: run_index, small, face: name, ligatures, dligatures });
+        for (c, all_cap) in mapped {
+            let Some(mut gid) = face.glyph_index(c) else {
+                continue;
+            };
+            let mut small = false;
+            if run.small_caps && !all_cap {
+                // Photoshop lays small caps out with the face's real `smcp`
+                // design, not a scaled capital: the advances measured from a
+                // 26 pt capture sheet's repeated-glyph lines are the `*.sc`
+                // advances (`m.sc` 736/1000 em -> 19.14 pt vs 19.10 measured,
+                // `a.sc` 528 -> 13.73 vs 13.75, ...), while `capital * 0.8`
+                // drifts by up to 0.55 pt per glyph. The *bitmaps* also come
+                // from the face's small caps design; a `small_caps` atlas
+                // capture (see `Atlas::small_caps`) supplies Photoshop's own
+                // raster for them. Faces without `smcp` fall back to the
+                // synthetic scaled capital.
+                if let Some(sub) = substitute_feature(face, c, *b"smcp", gid) {
+                    gid = sub;
+                } else if c.is_lowercase() {
+                    if let Some(upper) = c.to_uppercase().next().and_then(|u| face.glyph_index(u)) {
+                        gid = upper;
+                        small = true;
+                    }
+                }
             }
+            if run.old_style && c.is_numeric() {
+                // Photoshop's old-style figures are proportional: `pnum`
+                // (`zero` -> `zero.lf`) then `onum` (`zero.lf` -> `zero.osf`).
+                // `onum` alone selects the *tabular* `.tosf` set (547/1000 em
+                // for every digit), which lays the figures out up to 3.8 pt
+                // per digit away from Photoshop (measured: `1` 10.40 pt =
+                // `one.osf` 399/1000 em, `0` 15.25 = `zero.osf` 587/1000).
+                let step = substitute_feature(face, c, *b"pnum", gid).unwrap_or(gid);
+                if let Some(subst) = substitute_feature(face, c, *b"onum", step) {
+                    gid = subst;
+                } else {
+                    gid = step;
+                }
+            }
+            if std::env::var("PHOTOCRAFT_TRACE").is_ok_and(|v| v == "12") {
+                eprintln!(
+                    "item: ch={:?} gid={:05X} small={} old={}",
+                    c, gid, small, run.old_style
+                );
+            }
+            items.push(Item {
+                gid,
+                ch: c,
+                run: run_index,
+                small,
+                face: name,
+                ligatures,
+                dligatures,
+            });
         }
     }
     items
@@ -908,7 +1142,11 @@ fn collect_items<'a>(faces: &'a FontSet<'_>, text: &str, runs: &'a [RunStyle]) -
 /// `default_sheet` ([INFERENCE] for runs without a sheet).
 fn ligature_flags(run: &RunStyle) -> (bool, bool) {
     let flag = |key: &str, default: bool| {
-        run.sheet.as_ref().and_then(|s| s.get(key)).and_then(Value::as_bool).unwrap_or(default)
+        run.sheet
+            .as_ref()
+            .and_then(|s| s.get(key))
+            .and_then(Value::as_bool)
+            .unwrap_or(default)
     };
     (flag("Ligatures", true), flag("DLigatures", false))
 }
@@ -917,11 +1155,43 @@ fn ligature_flags(run: &RunStyle) -> (bool, bool) {
 fn face_name<'a>(faces: &'a FontSet<'_>, run: &'a RunStyle) -> &'a str {
     match &run.font {
         Some(name) => {
-            assert!(faces.get(name).is_some(), "run font {name:?} is not in the FontSet");
+            assert!(
+                faces.get(name).is_some(),
+                "run font {name:?} is not in the FontSet"
+            );
             name
         }
         None => faces.default_name(),
     }
+}
+
+/// One-glyph feature substitution (`smcp`, `c2sc`, `onum`): the replacement
+/// glyph of the first lookup that changes `gid`, or `None` when the face does
+/// not implement the feature for this glyph.
+fn substitute_feature(
+    face: &crate::font::Face<'_>,
+    ch: char,
+    tag: [u8; 4],
+    gid: u16,
+) -> Option<u16> {
+    let data = face.table(gsub::TAG_GSUB)?;
+    let table = Gsub::parse(data).ok()?;
+    let mut span = Span {
+        gid,
+        start: 0,
+        len: 1,
+    };
+    let mut changed = false;
+    for lookup in table.lookups(&script_tags(ch), &[tag]) {
+        let out = table.apply(lookup, &[span]);
+        if let Some(first) = out.first() {
+            if first.gid != span.gid {
+                span = *first;
+                changed = true;
+            }
+        }
+    }
+    changed.then_some(span.gid)
 }
 
 /// Script tags tried in order for a group: Latin letters use `latn`, others
@@ -943,7 +1213,10 @@ fn substitute(faces: &FontSet<'_>, items: &[Item<'_>]) -> Vec<Span> {
     let mut start = 0;
     while start < items.len() {
         let head = &items[start];
-        let len = items[start..].iter().take_while(|it| it.shares_shaping(head)).count();
+        let len = items[start..]
+            .iter()
+            .take_while(|it| it.shares_shaping(head))
+            .count();
         out.extend(substitute_group(faces, &items[start..start + len], start));
         start += len;
     }
@@ -951,8 +1224,15 @@ fn substitute(faces: &FontSet<'_>, items: &[Item<'_>]) -> Vec<Span> {
 }
 
 fn substitute_group(faces: &FontSet<'_>, group: &[Item<'_>], base: usize) -> Vec<Span> {
-    let mut spans: Vec<Span> =
-        group.iter().enumerate().map(|(i, it)| Span { gid: it.gid, start: base + i, len: 1 }).collect();
+    let mut spans: Vec<Span> = group
+        .iter()
+        .enumerate()
+        .map(|(i, it)| Span {
+            gid: it.gid,
+            start: base + i,
+            len: 1,
+        })
+        .collect();
     let head = &group[0];
     let mut features: Vec<[u8; 4]> = Vec::with_capacity(2);
     if head.ligatures {
@@ -972,7 +1252,7 @@ fn substitute_group(faces: &FontSet<'_>, group: &[Item<'_>], base: usize) -> Vec
         return spans;
     };
     for lookup in table.lookups(&script_tags(head.ch), &features) {
-        spans = table.ligate(lookup, &spans);
+        spans = table.apply(lookup, &spans);
     }
     spans
 }
@@ -1001,15 +1281,31 @@ fn layout_glyphs(
             Some((run_prev, prev_gid)) if run_prev == item.run => match rs.kerning {
                 Kerning::Metrics => face.kern_pair(prev_gid, span.gid) as f32 * glyph_scale,
                 Kerning::Manual(v) => v as f32 / 1000.0 * rs.size,
-                Kerning::Optical => crate::optical::optical_kern(face, prev_gid, span.gid, rs.size),
+                Kerning::Optical => crate::optical::optical_pair(face, prev_gid, span.gid, rs.size),
             },
             _ => 0.0,
         };
         pen += kern * hscale;
         let tracking = rs.tracking as f32 / 1000.0 * rs.size;
-        let extra = if run.faux_bold { faux_bold_extra_advance(rs.size) } else { 0.0 };
-        let advance = face.advance(span.gid) as f32 * glyph_scale * hscale + tracking + extra;
-        let glyph = GlyphPos { gid: span.gid, ch: item.ch, x: pen, y: rs.baseline_shift, advance };
+        let extra = if run.faux_bold {
+            faux_bold_extra_advance(rs.size)
+        } else {
+            0.0
+        };
+        // Tracking is a horizontal step, so it follows the horizontal scale
+        // (measured on `10_all_features.psd` layer `03 tracking baseline
+        // scales`: 22 pt, hscale 1.5, tracking 300 gives a 304 px ink width;
+        // unscaled predicts 268).
+        let advance =
+            face.advance(span.gid) as f32 * glyph_scale * hscale + tracking * hscale + extra;
+        let glyph = GlyphPos {
+            gid: span.gid,
+            ch: item.ch,
+            x: pen,
+            y: rs.baseline_shift,
+            advance,
+            nominal_advance: advance,
+        };
         let attrs = GlyphAttrs {
             run: item.run,
             color: run.color.unwrap_or([0, 0, 0]),

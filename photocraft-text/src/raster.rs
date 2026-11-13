@@ -112,6 +112,10 @@ pub struct Canvas {
     pub pixels: Vec<u8>,
     /// Rounds each glyph origin (pen x, baseline y) to whole device pixels.
     pub snap: bool,
+    /// Horizontal grid for the pen x when `snap` is on (1.0 = whole pixels).
+    /// Photoshop's Crisp mode positions glyphs on a finer subpixel grid than
+    /// the baseline grid; the exact step is measured per layer.
+    pub snap_x: f32,
     /// Coverage integrator used by the `mask_contours` / `fill_contours` family.
     pub coverage: Coverage,
     /// Faux-bold stroke radius in pixels, applied to the next masked glyph.
@@ -129,6 +133,7 @@ impl Canvas {
             height,
             pixels: vec![0; (width * height * 4) as usize],
             snap: true,
+            snap_x: 1.0,
             coverage: Coverage::Scanlines(4),
             curve: AlphaCurve::Linear,
             aa: AntiAlias::Sharp,
@@ -179,7 +184,15 @@ impl Canvas {
     /// Fills one glyph, `scale` device pixels per font unit, with the glyph
     /// origin at `(x, y)` (baseline, y down). Composites opaquely over the
     /// existing colour.
-    pub fn fill_contours(&mut self, contours: &Contours, scale: f32, x: f32, y: f32, color: [u8; 3], alpha: f32) {
+    pub fn fill_contours(
+        &mut self,
+        contours: &Contours,
+        scale: f32,
+        x: f32,
+        y: f32,
+        color: [u8; 3],
+        alpha: f32,
+    ) {
         let Some(mask) = self.glyph_mask(contours, scale, scale, 0.0, x, y) else {
             return;
         };
@@ -196,14 +209,31 @@ impl Canvas {
     /// Draws one glyph as a straight-alpha mask: the colour stays unpremultiplied
     /// and the transferred coverage becomes the alpha, so a file with this layer
     /// carries the same antialiasing we computed.
-    pub fn mask_contours(&mut self, contours: &Contours, scale: f32, x: f32, y: f32, color: [u8; 3], alpha: f32) {
+    pub fn mask_contours(
+        &mut self,
+        contours: &Contours,
+        scale: f32,
+        x: f32,
+        y: f32,
+        color: [u8; 3],
+        alpha: f32,
+    ) {
         self.mask_contours_transformed(contours, scale, scale, 0.0, x, y, color, alpha);
     }
 
     /// As [`Canvas::mask_contours`] with independent horizontal and vertical
     /// scales: `sx` and `sy` device pixels per font unit. The origin
     /// `(x, baseline)` follows the same snap rule.
-    pub fn mask_contours_scaled(&mut self, contours: &Contours, sx: f32, sy: f32, x: f32, baseline: f32, color: [u8; 3], alpha: f32) {
+    pub fn mask_contours_scaled(
+        &mut self,
+        contours: &Contours,
+        sx: f32,
+        sy: f32,
+        x: f32,
+        baseline: f32,
+        color: [u8; 3],
+        alpha: f32,
+    ) {
         self.mask_contours_transformed(contours, sx, sy, 0.0, x, baseline, color, alpha);
     }
 
@@ -236,41 +266,118 @@ impl Canvas {
         });
     }
 
+    /// Glyph placement through an arbitrary point map, used for warped type.
+    ///
+    /// The affine part is the same as [`Canvas::mask_contours_transformed`]
+    /// (`(x + px*sx + skew*py*sy, baseline - py*sy)`); `warp` then maps that
+    /// flat device point to the output canvas. Photoshop warps the glyph
+    /// *outlines* and rasterises them in the warped space, so a warped layer
+    /// must go through this path rather than resampling a flat bitmap (which
+    /// doubles edges wherever the warp has a shear). No pen snapping is
+    /// applied: the affine placement is the flat layout's own position.
+    pub fn mask_contours_warped(
+        &mut self,
+        contours: &Contours,
+        sx: f32,
+        sy: f32,
+        skew: f32,
+        x: f32,
+        baseline: f32,
+        warp: &dyn Fn(f32, f32) -> (f32, f32),
+        color: [u8; 3],
+        alpha: f32,
+    ) {
+        let map = |px: f32, py: f32| warp(x + px * sx + skew * py * sy, baseline - py * sy);
+        let edges = flatten(contours, &map);
+        let Some(mut mask) = glyph_mask(&edges, self.coverage) else {
+            return;
+        };
+        if self.embolden > 0.0 {
+            mask.dilate(self.embolden);
+        }
+        mask.for_each_pixel(self.width, self.height, |p, cov| {
+            let a = self.quantised(self.curve.apply(cov)) * alpha;
+            self.over(p, color, a.clamp(0.0, 1.0));
+        });
+    }
+
     /// Solid horizontal bar for an underline. `offset` is the distance from
     /// the baseline to the bar's top edge, positive downward in device space.
     /// Columns span `round(x0)..round(x1)`; top and bottom rows carry partial
     /// coverage, full rows are solid. The bar is not passed through `curve`.
-    pub fn underline(&mut self, x0: f32, x1: f32, baseline: f32, thickness: f32, offset: f32, color: [u8; 3], alpha: f32) {
+    pub fn underline(
+        &mut self,
+        x0: f32,
+        x1: f32,
+        baseline: f32,
+        thickness: f32,
+        offset: f32,
+        color: [u8; 3],
+        alpha: f32,
+    ) {
         self.bar(x0, x1, baseline, thickness, offset, color, alpha);
     }
 
     /// Solid horizontal bar for a strikeout; same conventions as [`Canvas::underline`].
     /// Pass a negative `offset` to sit above the baseline.
-    pub fn strikeout(&mut self, x0: f32, x1: f32, baseline: f32, thickness: f32, offset: f32, color: [u8; 3], alpha: f32) {
+    pub fn strikeout(
+        &mut self,
+        x0: f32,
+        x1: f32,
+        baseline: f32,
+        thickness: f32,
+        offset: f32,
+        color: [u8; 3],
+        alpha: f32,
+    ) {
         self.bar(x0, x1, baseline, thickness, offset, color, alpha);
     }
 
-    fn bar(&mut self, x0: f32, x1: f32, baseline: f32, thickness: f32, offset: f32, color: [u8; 3], alpha: f32) {
+    fn bar(
+        &mut self,
+        x0: f32,
+        x1: f32,
+        baseline: f32,
+        thickness: f32,
+        offset: f32,
+        color: [u8; 3],
+        alpha: f32,
+    ) {
         if thickness <= 0.0 || alpha <= 0.0 {
             return;
         }
-        let baseline = if self.snap { baseline.round() } else { baseline };
-        let xs = x0.min(x1).round().max(0.0) as i64;
-        let xe = (x0.max(x1).round() as i64).min(self.width as i64);
-        if xe <= xs {
+        let baseline = if self.snap {
+            baseline.round()
+        } else {
+            baseline
+        };
+        // Both axes use exact coverage: Photoshop draws the rule from a
+        // fractional x range and leaves a partial last column (layer `01`'s
+        // 573.51 pt rule stores 128 on its last column, layer `07`'s 433.03 pt
+        // rule 48/32), so rounding the x edges to whole pixels would paint a
+        // full column where Photoshop paints half, and drop the 1/4 one.
+        let lo = x0.min(x1).max(0.0);
+        let hi = x0.max(x1).min(self.width as f32);
+        if hi <= lo {
             return;
         }
         let top = baseline + offset;
         let bottom = top + thickness;
         let y_from = top.floor().max(0.0) as i64;
         let y_to = (bottom.ceil() as i64).min(self.height as i64);
+        let xs = lo.floor() as i64;
+        let xe = hi.ceil() as i64;
         for yy in y_from..y_to {
-            let cov = ((bottom.min((yy + 1) as f32)) - top.max(yy as f32)).clamp(0.0, 1.0);
-            if cov <= 0.0 {
+            let cov_y = ((bottom.min((yy + 1) as f32)) - top.max(yy as f32)).clamp(0.0, 1.0);
+            if cov_y <= 0.0 {
                 continue;
             }
-            let a = (cov * alpha).clamp(0.0, 1.0);
             for xx in xs..xe {
+                let cov_x = ((hi.min((xx + 1) as f32)) - lo.max(xx as f32)).clamp(0.0, 1.0);
+                if cov_x <= 0.0 {
+                    continue;
+                }
+                let a = (cov_y * cov_x * alpha).clamp(0.0, 1.0);
                 let p = (yy as usize * self.width as usize + xx as usize) * 4;
                 self.over(p, color, a);
             }
@@ -324,15 +431,29 @@ impl Canvas {
         let out = (a + prev * (1.0 - a)).clamp(0.0, 1.0);
         if out > 0.0 {
             for c in 0..3 {
-                let mixed = (color[c] as f32 * a + self.pixels[p + c] as f32 * prev * (1.0 - a)) / out;
+                let mixed =
+                    (color[c] as f32 * a + self.pixels[p + c] as f32 * prev * (1.0 - a)) / out;
                 self.pixels[p + c] = mixed.round().clamp(0.0, 255.0) as u8;
             }
             self.pixels[p + 3] = (out * 255.0).round() as u8;
         }
     }
 
-    fn glyph_mask(&self, contours: &Contours, sx: f32, sy: f32, skew: f32, x: f32, baseline: f32) -> Option<Mask> {
-        let (x, y) = if self.snap { (x.round(), baseline.round()) } else { (x, baseline) };
+    fn glyph_mask(
+        &self,
+        contours: &Contours,
+        sx: f32,
+        sy: f32,
+        skew: f32,
+        x: f32,
+        baseline: f32,
+    ) -> Option<Mask> {
+        let (x, y) = if self.snap {
+            let grid = self.snap_x.max(1.0e-3);
+            ((x / grid).round() * grid, baseline.round())
+        } else {
+            (x, baseline)
+        };
         let map = |px: f32, py: f32| (x + px * sx + skew * py * sy, y - py * sy);
         let edges = flatten(contours, &map);
         glyph_mask(&edges, self.coverage)
@@ -375,7 +496,8 @@ impl Mask {
                             continue;
                         }
                         let (nx, ny) = (x + dx + r, y + dy + r);
-                        cov[(ny * nw as i32 + nx) as usize] = cov[(ny * nw as i32 + nx) as usize].max(v);
+                        cov[(ny * nw as i32 + nx) as usize] =
+                            cov[(ny * nw as i32 + nx) as usize].max(v);
                     }
                 }
             }
@@ -447,24 +569,45 @@ fn flatten(contours: &Contours, map: &dyn Fn(f32, f32) -> (f32, f32)) -> Vec<Edg
                 ((last.0 + first.0) / 2.0, (last.1 + first.1) / 2.0, true)
             }
         };
-        let mut cur = to_device(Point { x: start.0, y: start.1, on: true });
+        let mut cur = to_device(Point {
+            x: start.0,
+            y: start.1,
+            on: true,
+        });
         let mut ctrl: Option<(f32, f32)> = None;
         for &(x, y, on) in points.iter().chain(std::iter::once(&start)) {
             if on {
                 let end = to_device(Point { x, y, on: true });
                 match ctrl.take() {
                     Some((cx, cy)) => {
-                        let c = to_device(Point { x: cx, y: cy, on: false });
+                        let c = to_device(Point {
+                            x: cx,
+                            y: cy,
+                            on: false,
+                        });
                         emit_quad(&mut edges, cur, c, end);
                     }
-                    None => edges.push(Edge { x0: cur.0, y0: cur.1, x1: end.0, y1: end.1 }),
+                    None => edges.push(Edge {
+                        x0: cur.0,
+                        y0: cur.1,
+                        x1: end.0,
+                        y1: end.1,
+                    }),
                 }
                 cur = end;
             } else {
                 if let Some((px, py)) = ctrl {
                     let mid = ((px + x) / 2.0, (py + y) / 2.0);
-                    let end = to_device(Point { x: mid.0, y: mid.1, on: true });
-                    let c = to_device(Point { x: px, y: py, on: false });
+                    let end = to_device(Point {
+                        x: mid.0,
+                        y: mid.1,
+                        on: true,
+                    });
+                    let c = to_device(Point {
+                        x: px,
+                        y: py,
+                        on: false,
+                    });
                     emit_quad(&mut edges, cur, c, end);
                     cur = end;
                 }
@@ -480,7 +623,12 @@ fn emit_quad(edges: &mut Vec<Edge>, from: (f32, f32), ctrl: (f32, f32), to: (f32
     let mut prev = from;
     for i in 1..=STEPS {
         let next = quad_at(from, ctrl, to, i as f32 / STEPS as f32);
-        edges.push(Edge { x0: prev.0, y0: prev.1, x1: next.0, y1: next.1 });
+        edges.push(Edge {
+            x0: prev.0,
+            y0: prev.1,
+            x1: next.0,
+            y1: next.1,
+        });
         prev = next;
     }
 }

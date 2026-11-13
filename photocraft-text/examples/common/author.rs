@@ -166,7 +166,11 @@ pub fn author(file: &mut PsdFile, spec: &LayerSpec) -> Result<(), Box<dyn Error>
     }
     let covered: usize = spec.runs.iter().map(|r| r.len).sum();
     if covered != units + 1 {
-        return Err(format!("runs cover {covered} units, text + terminator is {}", units + 1).into());
+        return Err(format!(
+            "runs cover {covered} units, text + terminator is {}",
+            units + 1
+        )
+        .into());
     }
 
     // 1. Text and paragraph runs.
@@ -210,7 +214,12 @@ pub fn author(file: &mut PsdFile, spec: &LayerSpec) -> Result<(), Box<dyn Error>
             data = txt2::set_run_fill_color(
                 &data,
                 i,
-                [1.0, f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0],
+                [
+                    1.0,
+                    f32::from(r) / 255.0,
+                    f32::from(g) / 255.0,
+                    f32::from(b) / 255.0,
+                ],
             )?;
         }
     }
@@ -255,7 +264,12 @@ pub fn author(file: &mut PsdFile, spec: &LayerSpec) -> Result<(), Box<dyn Error>
     if let Some([left, top, right, bottom]) = spec.frame {
         data = txt2::set_frame_geometry(
             &data,
-            txt2::FrameGeometry { left, top, right, bottom },
+            txt2::FrameGeometry {
+                left,
+                top,
+                right,
+                bottom,
+            },
         )?;
     }
     data = txt2::clear_cache(&data, 0)?;
@@ -289,9 +303,8 @@ pub fn author(file: &mut PsdFile, spec: &LayerSpec) -> Result<(), Box<dyn Error>
         if let Some(on) = spec.fractional {
             runs::set_fractional_glyph_widths(ed, on);
         }
-        if let Some(photocraft_text::engine_data::Value::Dict(entries)) = ed
-            .get_mut("EngineDict")
-            .and_then(|d| d.get_mut("Editor"))
+        if let Some(photocraft_text::engine_data::Value::Dict(entries)) =
+            ed.get_mut("EngineDict").and_then(|d| d.get_mut("Editor"))
         {
             let text = photocraft_text::engine_data::Value::Str(format!("{text}\r"));
             match entries.iter_mut().find(|(k, _)| k == "Text") {
@@ -324,7 +337,9 @@ fn paragraph_runs(text: &str, para: &ParagraphSpec) -> Vec<ParagraphRun> {
             word_spacing: para.word_spacing,
             letter_spacing: para.letter_spacing,
             glyph_scaling: para.glyph_scaling,
-            justification: photocraft_text::area::Justification::from_psd(para.justification as i32),
+            justification: photocraft_text::area::Justification::from_psd(
+                para.justification as i32,
+            ),
             every_line_composer: para.every_line_composer,
             first_line_indent: para.first_line_indent,
             start_indent: para.start_indent,
@@ -332,6 +347,7 @@ fn paragraph_runs(text: &str, para: &ParagraphSpec) -> Vec<ParagraphRun> {
             space_before: para.space_before,
             space_after: para.space_after,
             auto_leading: para.auto_leading,
+            ..ParagraphRun::default()
         })
         .collect()
 }

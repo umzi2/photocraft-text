@@ -66,7 +66,10 @@ fn resolve_font(family: &str) -> PathBuf {
     }
     // The probes also drew from the font source directory; fall back to it.
     let src = PathBuf::from("/media/H/anime-set/text_detect/fontas").join(file);
-    assert!(src.exists(), "font {family} not found at {wine:?} or {src:?}");
+    assert!(
+        src.exists(),
+        "font {family} not found at {wine:?} or {src:?}"
+    );
     src
 }
 
@@ -91,7 +94,10 @@ fn first_baseline_ratio_matches_the_calibrated_font_table() {
             );
             // The public helpers are the formula, not a lookup table.
             assert_eq!(first_baseline_ratio(face), got);
-            assert_eq!(first_baseline(face, 36.0), first_baseline_offset(face.ascent_ratio(), 36.0));
+            assert_eq!(
+                first_baseline(face, 36.0),
+                first_baseline_offset(face.ascent_ratio(), 36.0)
+            );
             assert!((first_baseline(face, 36.0) - measured * 36.0).abs() <= 0.0012 * 36.0);
         });
     }

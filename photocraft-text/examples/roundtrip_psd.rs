@@ -5,6 +5,11 @@ fn main() {
     let bytes = std::fs::read(&p).unwrap();
     let file = PsdFile::from_bytes(&bytes).unwrap();
     let out = file.to_bytes().unwrap();
-    println!("in {} out {} equal {}", bytes.len(), out.len(), bytes == out);
+    println!(
+        "in {} out {} equal {}",
+        bytes.len(),
+        out.len(),
+        bytes == out
+    );
     std::fs::write(&o, &out).unwrap();
 }

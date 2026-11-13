@@ -15,7 +15,10 @@ impl<'a> Reader<'a> {
 
     pub fn at(data: &'a [u8], pos: usize) -> Result<Self> {
         if pos > data.len() {
-            return Err(Error::OutOfBounds { needed: pos, len: data.len() });
+            return Err(Error::OutOfBounds {
+                needed: pos,
+                len: data.len(),
+            });
         }
         Ok(Self { data, pos })
     }
@@ -30,7 +33,10 @@ impl<'a> Reader<'a> {
 
     pub fn seek(&mut self, pos: usize) -> Result<()> {
         if pos > self.data.len() {
-            return Err(Error::OutOfBounds { needed: pos, len: self.data.len() });
+            return Err(Error::OutOfBounds {
+                needed: pos,
+                len: self.data.len(),
+            });
         }
         self.pos = pos;
         Ok(())
@@ -45,9 +51,15 @@ impl<'a> Reader<'a> {
     }
 
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        let end = self.pos.checked_add(n).ok_or(Error::OutOfBounds { needed: usize::MAX, len: self.data.len() })?;
+        let end = self.pos.checked_add(n).ok_or(Error::OutOfBounds {
+            needed: usize::MAX,
+            len: self.data.len(),
+        })?;
         if end > self.data.len() {
-            return Err(Error::OutOfBounds { needed: end, len: self.data.len() });
+            return Err(Error::OutOfBounds {
+                needed: end,
+                len: self.data.len(),
+            });
         }
         let out = &self.data[self.pos..end];
         self.pos = end;

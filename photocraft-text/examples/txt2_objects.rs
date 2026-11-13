@@ -40,10 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("usage: txt2_objects <file.psd> [object-index] [--defaults] [--tysh]");
         std::process::exit(2);
     }
-    let object_filter: Option<usize> = args
-        .iter()
-        .skip(2)
-        .find_map(|a| a.parse().ok());
+    let object_filter: Option<usize> = args.iter().skip(2).find_map(|a| a.parse().ok());
     let show_defaults = args.iter().any(|a| a == "--defaults");
     let show_tysh = args.iter().any(|a| a == "--tysh");
 
@@ -82,11 +79,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if show_defaults {
         if let Some(node) = dict_value(&block, &toks, engine, "2") {
-            println!("\n# shared default character sheet /1/2 ({} keys)", dict_len(&block, &toks, node));
+            println!(
+                "\n# shared default character sheet /1/2 ({} keys)",
+                dict_len(&block, &toks, node)
+            );
             dump_dict(&block, &toks, node, "  /1/2");
         }
         if let Some(node) = dict_value(&block, &toks, engine, "3") {
-            println!("\n# shared default paragraph sheet /1/3 ({} keys)", dict_len(&block, &toks, node));
+            println!(
+                "\n# shared default paragraph sheet /1/3 ({} keys)",
+                dict_len(&block, &toks, node)
+            );
             dump_dict(&block, &toks, node, "  /1/3");
         }
     }
@@ -114,7 +117,9 @@ fn dump_tysh(file: &PsdFile, texts: &[String]) -> Result<(), Box<dyn std::error:
             .to_string()
     };
     for (li, layer) in file.layers().iter().enumerate() {
-        let Some(block) = layer.block(b"TySh") else { continue };
+        let Some(block) = layer.block(b"TySh") else {
+            continue;
+        };
         let tysh = TySh::from_bytes(&block.data)?;
         let d = &tysh.descriptor.descriptor;
         let text = d.get("Txt ").and_then(value_text).unwrap_or_default();
@@ -124,10 +129,7 @@ fn dump_tysh(file: &PsdFile, texts: &[String]) -> Result<(), Box<dyn std::error:
             Some(i) => format!("text object {i}"),
             None => "no matching Txt2 object".to_string(),
         };
-        println!(
-            "\nlayer {li} {:?} -> {tag}",
-            layer.name()
-        );
+        println!("\nlayer {li} {:?} -> {tag}", layer.name());
         println!("  text={trimmed:?}");
         println!("  text_version {} (TySh v1, warp v1)", tysh.text_version);
         println!(
@@ -142,14 +144,27 @@ fn dump_tysh(file: &PsdFile, texts: &[String]) -> Result<(), Box<dyn std::error:
             tysh.bounds[2],
             tysh.bounds[3]
         );
-        for key in ["Ornt", "AntA", "textGridding", "TextIndex", "bounds", "boundingBox"] {
+        for key in [
+            "Ornt",
+            "AntA",
+            "textGridding",
+            "TextIndex",
+            "bounds",
+            "boundingBox",
+        ] {
             if let Some(v) = d.get(key) {
                 println!("  {key} = {}", describe_value(v));
             }
         }
         let w = &tysh.warp.descriptor;
         let mut bits = Vec::new();
-        for key in ["warpStyle", "warpValue", "warpPerspective", "warpPerspectiveOther", "warpRotate"] {
+        for key in [
+            "warpStyle",
+            "warpValue",
+            "warpPerspective",
+            "warpPerspectiveOther",
+            "warpRotate",
+        ] {
             if let Some(v) = w.get(key) {
                 bits.push(format!("{key}={}", describe_value(v)));
             }
@@ -207,7 +222,12 @@ fn fmt_num(v: f64) -> String {
     if s.is_empty() { "0".to_string() } else { s }
 }
 
-fn dump_object(block: &[u8], toks: &[Token], index: usize, obj: usize) -> Result<(), Box<dyn std::error::Error>> {
+fn dump_object(
+    block: &[u8],
+    toks: &[Token],
+    index: usize,
+    obj: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     let view = dict_value(block, toks, obj, "0").ok_or("object has no /0 view")?;
     let text = dict_value(block, toks, view, "0")
         .map(|n| decode_str(block, toks, n))
@@ -434,9 +454,16 @@ fn array_item(toks: &[Token], node: usize, index: usize) -> Option<usize> {
 /// The rectangle lives in the `/99 /F` dictionary, inside the object's
 /// composed-layout container. A point-text layer carries a `/99 /F` node too
 /// but no `/1` rectangle, so the search requires both.
-fn find_frame(block: &[u8], toks: &[Token], node: usize, prefix: &str) -> Option<(String, Vec<String>)> {
+fn find_frame(
+    block: &[u8],
+    toks: &[Token],
+    node: usize,
+    prefix: &str,
+) -> Option<(String, Vec<String>)> {
     fn rect(block: &[u8], toks: &[Token], arr: usize) -> Option<Vec<String>> {
-        if !matches!(toks.get(arr).map(|t| &t.kind), Some(Kind::ArrayOpen)) || array_len(toks, arr) != 4 {
+        if !matches!(toks.get(arr).map(|t| &t.kind), Some(Kind::ArrayOpen))
+            || array_len(toks, arr) != 4
+        {
             return None;
         }
         let mut out = Vec::new();
@@ -451,7 +478,12 @@ fn find_frame(block: &[u8], toks: &[Token], node: usize, prefix: &str) -> Option
         Some(out)
     }
 
-    fn walk(block: &[u8], toks: &[Token], node: usize, path: &mut String) -> Option<(String, Vec<String>)> {
+    fn walk(
+        block: &[u8],
+        toks: &[Token],
+        node: usize,
+        path: &mut String,
+    ) -> Option<(String, Vec<String>)> {
         match &toks.get(node)?.kind {
             Kind::DictOpen => {
                 let entries = txt2::dict_entries(toks, node)?;

@@ -18,14 +18,18 @@
 
 use std::path::PathBuf;
 
-use photocraft_text::area::{layout_area, AreaLayout, Justification, ParagraphStyle};
+use photocraft_text::area::{
+    AreaLayout, Justification, ParagraphStyle, layout_area, layout_area_paragraphs_with_advances,
+};
 use photocraft_text::font::Face;
 use photocraft_text::layout::TextStyle;
 use photocraft_text::typography;
 
 fn font_path(name: &str) -> PathBuf {
     let home = std::env::var("HOME").expect("HOME");
-    PathBuf::from(home).join(".local/share/photocraft/wine/drive_c/windows/Fonts").join(name)
+    PathBuf::from(home)
+        .join(".local/share/photocraft/wine/drive_c/windows/Fonts")
+        .join(name)
 }
 
 fn with_face<R>(name: &str, f: impl FnOnce(&Face<'_>) -> R) -> R {
@@ -49,12 +53,21 @@ fn lay(
     height: f32,
     origin: (f32, f32),
 ) -> AreaLayout {
-    let style = TextStyle { size, leading, ..Default::default() };
+    let style = TextStyle {
+        size,
+        leading,
+        ..Default::default()
+    };
     layout_area(face, text, &style, para, width, height, origin, 0.76)
 }
 
 fn chars(line: &photocraft_text::area::Line) -> String {
-    line.glyphs.iter().map(|g| g.ch).collect::<String>().trim_end().to_string()
+    line.glyphs
+        .iter()
+        .map(|g| g.ch)
+        .collect::<String>()
+        .trim_end()
+        .to_string()
 }
 
 /// x of the last glyph that is not a break space, relative to the line start.
@@ -87,8 +100,10 @@ struct GlyphFixture {
 
 fn load_fixture(id: &str) -> GlyphFixture {
     let path = PathBuf::from("tests/data").join(format!("{id}.json"));
-    serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}")))
-        .expect("fixture")
+    serde_json::from_str(
+        &std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}")),
+    )
+    .expect("fixture")
 }
 
 // ---------------------------------------------------------------------------
@@ -115,12 +130,19 @@ fn first_line_and_left_indent_match_area_indent_pdf() {
         assert_eq!(out.lines.len(), 2);
         for (i, line) in out.lines.iter().enumerate() {
             let x = line.glyphs[0].x;
-            assert!((x - 61.998).abs() < 0.002, "paragraph {i} starts at {x}, Photoshop 61.998");
+            assert!(
+                (x - 61.998).abs() < 0.002,
+                "paragraph {i} starts at {x}, Photoshop 61.998"
+            );
         }
         // Leading is 36 * 1.2 = 43.2; our y axis is PDF-like (decreasing down).
         let step = out.lines[0].baseline - out.lines[1].baseline;
         assert!((step - 43.2).abs() < 1e-3, "baseline step {step} != 43.2");
-        assert!((out.lines[0].baseline - 27.3598).abs() < 1e-3, "first baseline {}", out.lines[0].baseline);
+        assert!(
+            (out.lines[0].baseline - 27.3598).abs() < 1e-3,
+            "first baseline {}",
+            out.lines[0].baseline
+        );
     });
 }
 
@@ -132,17 +154,38 @@ fn right_indent_narrows_the_measure() {
     with_face(noto(), |face| {
         let text = "aaa bbb ccc";
         let base = ParagraphStyle::default();
-        let wide = lay(face, text, &base, 36.0, Some(43.2), 1000.0, 300.0, (0.0, 0.0));
+        let wide = lay(
+            face,
+            text,
+            &base,
+            36.0,
+            Some(43.2),
+            1000.0,
+            300.0,
+            (0.0, 0.0),
+        );
         assert_eq!(wide.lines.len(), 1);
         let full = content_end(&wide.lines[0]);
         // Shrink the box so the last word no longer fits, but a right indent of
         // the same amount behaves identically.
         let width = full - 5.0;
-        let narrow = lay(face, text, &base, 36.0, Some(43.2), width, 300.0, (0.0, 0.0));
+        let narrow = lay(
+            face,
+            text,
+            &base,
+            36.0,
+            Some(43.2),
+            width,
+            300.0,
+            (0.0, 0.0),
+        );
         let indented = lay(
             face,
             text,
-            &ParagraphStyle { end_indent: 5.0, ..Default::default() },
+            &ParagraphStyle {
+                end_indent: 5.0,
+                ..Default::default()
+            },
             36.0,
             Some(43.2),
             width + 5.0,
@@ -165,19 +208,47 @@ fn space_before_after_stack_between_paragraphs() {
     // space_after(previous) + space_before(next) is added to the one leading
     // that already separates two paragraphs.
     with_face(noto(), |face| {
-        let para = ParagraphStyle { space_before: 12.0, space_after: 18.0, ..Default::default() };
-        let out = lay(face, "a\rb", &para, 36.0, Some(43.2), 1000.0, 1000.0, (0.0, 0.0));
+        let para = ParagraphStyle {
+            space_before: 12.0,
+            space_after: 18.0,
+            ..Default::default()
+        };
+        let out = lay(
+            face,
+            "a\rb",
+            &para,
+            36.0,
+            Some(43.2),
+            1000.0,
+            1000.0,
+            (0.0, 0.0),
+        );
         assert_eq!(out.lines.len(), 2);
         let first_off = 0.76 * 36.0;
-        // The first paragraph starts one space_before lower than the box top.
-        assert!((out.lines[0].baseline - (first_off + 12.0)).abs() < 1e-3);
+        // Photoshop does not add `SpaceBefore` above the first paragraph of a
+        // frame: layer `05 area indents spacing` stores `SpaceBefore 12` and its
+        // first ink row still matches the `TySh` baseline (`10_all_features.psd`,
+        // render_psd rect-exact, dy 0).
+        assert!((out.lines[0].baseline - first_off).abs() < 1e-3);
         // 43.2 leading + 18 space_after + 12 space_before.
         let step = out.lines[0].baseline - out.lines[1].baseline;
-        assert!((step - (43.2 + 18.0 + 12.0)).abs() < 1e-3, "paragraph step {step}");
+        assert!(
+            (step - (43.2 + 18.0 + 12.0)).abs() < 1e-3,
+            "paragraph step {step}"
+        );
     });
     // Zero spacing keeps the plain one-leading step used by every corpus layer.
     with_face(noto(), |face| {
-        let out = lay(face, "a\rb", &ParagraphStyle::default(), 36.0, Some(43.2), 1000.0, 1000.0, (0.0, 0.0));
+        let out = lay(
+            face,
+            "a\rb",
+            &ParagraphStyle::default(),
+            36.0,
+            Some(43.2),
+            1000.0,
+            1000.0,
+            (0.0, 0.0),
+        );
         let step = out.lines[0].baseline - out.lines[1].baseline;
         assert!((step - 43.2).abs() < 1e-3);
     });
@@ -199,12 +270,27 @@ fn justify_matches_box_justify_glyph_positions_and_line_ends() {
     let fx = load_fixture("box_justify");
     let bytes = std::fs::read(font_path(&format!("{}.ttf", fx.font))).expect("font");
     let face = Face::parse(&bytes).expect("parse");
-    let style = TextStyle { size: fx.em_px, ..Default::default() };
-    let para = ParagraphStyle { justification: Justification::JustifyAll, ..Default::default() };
+    let style = TextStyle {
+        size: fx.em_px,
+        ..Default::default()
+    };
+    let para = ParagraphStyle {
+        justification: Justification::JustifyAll,
+        ..Default::default()
+    };
     // The PDF's em is 47.997 pt for a 48 pt font; scale the measure like the
     // PDF exporter did (same rule as tests/layout_corpus.rs).
     let width = fx.box_width * fx.em_px / fx.size;
-    let out = layout_area(&face, &fx.text, &style, &para, width, fx.box_height, (fx.box_left, 0.0), 0.76);
+    let out = layout_area(
+        &face,
+        &fx.text,
+        &style,
+        &para,
+        width,
+        fx.box_height,
+        (fx.box_left, 0.0),
+        0.76,
+    );
     let ours: Vec<_> = out.lines.iter().flat_map(|l| l.glyphs.iter()).collect();
     assert_eq!(ours.len(), fx.glyphs.len(), "glyph count");
     let mut max_dx = 0.0f32;
@@ -212,7 +298,13 @@ fn justify_matches_box_justify_glyph_positions_and_line_ends() {
         assert_eq!(g.ch.to_string(), m.ch, "glyph {i}");
         let dx = (g.x - m.x).abs();
         max_dx = max_dx.max(dx);
-        assert!(dx < 0.02, "glyph {i} {:?}: x {:.5} vs Photoshop {:.5}", g.ch, g.x, m.x);
+        assert!(
+            dx < 0.02,
+            "glyph {i} {:?}: x {:.5} vs Photoshop {:.5}",
+            g.ch,
+            g.x,
+            m.x
+        );
     }
     // The requirement for justified lines: every visible line ends at the box's
     // right edge within 0.01 pt of Photoshop's PDF.
@@ -224,7 +316,11 @@ fn justify_matches_box_justify_glyph_positions_and_line_ends() {
             .last()
             .map(|m| m.x + m.advance.unwrap_or(0.0));
         let _ = m_end;
-        let ours_end = line.glyphs.iter().rposition(|g| g.ch != ' ').map(|i| line.glyphs[i].x + line.glyphs[i].advance);
+        let ours_end = line
+            .glyphs
+            .iter()
+            .rposition(|g| g.ch != ' ')
+            .map(|i| line.glyphs[i].x + line.glyphs[i].advance);
         let tgt = fx.box_left + width;
         let d = (ours_end.unwrap() - tgt).abs();
         assert!(d < 0.01, "line {k} ends at {:?}, box right {tgt}", ours_end);
@@ -242,24 +338,62 @@ fn justify_with_defaults_moves_spaces_only() {
     let fx = load_fixture("box_justify");
     let bytes = std::fs::read(font_path(&format!("{}.ttf", fx.font))).expect("font");
     let face = Face::parse(&bytes).expect("parse");
-    let style = TextStyle { size: fx.em_px, ..Default::default() };
-    let para = ParagraphStyle { justification: Justification::JustifyAll, ..Default::default() };
+    let style = TextStyle {
+        size: fx.em_px,
+        ..Default::default()
+    };
+    let para = ParagraphStyle {
+        justification: Justification::JustifyAll,
+        ..Default::default()
+    };
     let width = fx.box_width * fx.em_px / fx.size;
-    let out = layout_area(&face, &fx.text, &style, &para, width, fx.box_height, (fx.box_left, 0.0), 0.76);
+    let out = layout_area(
+        &face,
+        &fx.text,
+        &style,
+        &para,
+        width,
+        fx.box_height,
+        (fx.box_left, 0.0),
+        0.76,
+    );
     // Lines 1 and 2 contain interior spaces; their advances must be the
     // Photoshop PDF values (41.2395 and 15.7180 for this text).
     // The PDF prints the two interior spaces of line 1 at 41.2395 and the
     // break space with no advance (it is a no-op at the end of the line).
-    let first_spaces: Vec<f32> = out.lines[0].glyphs.iter().filter(|g| g.ch == ' ').map(|g| g.advance).collect();
-    assert_eq!(first_spaces.len(), 3, "line 1: two stretched spaces and the break space");
+    let first_spaces: Vec<f32> = out.lines[0]
+        .glyphs
+        .iter()
+        .filter(|g| g.ch == ' ')
+        .map(|g| g.advance)
+        .collect();
+    assert_eq!(
+        first_spaces.len(),
+        3,
+        "line 1: two stretched spaces and the break space"
+    );
     for (i, a) in first_spaces[..2].iter().enumerate() {
-        assert!((a - 41.2395).abs() < 0.01, "line 1 space {i} advance {a} != Photoshop 41.2395");
+        assert!(
+            (a - 41.2395).abs() < 0.01,
+            "line 1 space {i} advance {a} != Photoshop 41.2395"
+        );
     }
-    assert!((first_spaces[2] - 12.47974).abs() < 0.01, "the break space is not stretched");
+    assert!(
+        (first_spaces[2] - 12.47974).abs() < 0.01,
+        "the break space is not stretched"
+    );
     // Line 2 prints three spaces at 15.7180.
-    let second: Vec<f32> = out.lines[1].glyphs.iter().filter(|g| g.ch == ' ').map(|g| g.advance).collect();
+    let second: Vec<f32> = out.lines[1]
+        .glyphs
+        .iter()
+        .filter(|g| g.ch == ' ')
+        .map(|g| g.advance)
+        .collect();
     for (i, a) in second.iter().enumerate().take(3) {
-        assert!((a - 15.7180).abs() < 0.02, "line 2 space {i} advance {a} != Photoshop 15.7180");
+        assert!(
+            (a - 15.7180).abs() < 0.02,
+            "line 2 space {i} advance {a} != Photoshop 15.7180"
+        );
     }
     // Letters are untouched: compare against the same text laid out ragged.
     let ragged = layout_area(
@@ -273,8 +407,17 @@ fn justify_with_defaults_moves_spaces_only() {
         0.76,
     );
     for (jl, rl) in out.lines.iter().zip(&ragged.lines) {
-        for (jg, rg) in jl.glyphs.iter().zip(&rl.glyphs).filter(|(g, _)| g.ch != ' ') {
-            assert!((jg.advance - rg.advance).abs() < 1e-4, "{:?} letter advance moved by justify", jg.ch);
+        for (jg, rg) in jl
+            .glyphs
+            .iter()
+            .zip(&rl.glyphs)
+            .filter(|(g, _)| g.ch != ' ')
+        {
+            assert!(
+                (jg.advance - rg.advance).abs() < 1e-4,
+                "{:?} letter advance moved by justify",
+                jg.ch
+            );
         }
     }
 }
@@ -292,14 +435,26 @@ fn justify_uses_letter_spacing_range_when_the_paragraph_defines_one() {
         let text = "ab cd";
         let size = 48.0;
         let width = 300.0;
-        let base = ParagraphStyle { justification: Justification::JustifyAll, ..Default::default() };
+        let base = ParagraphStyle {
+            justification: Justification::JustifyAll,
+            ..Default::default()
+        };
         let plain = lay(face, text, &base, size, None, width, 100.0, (0.0, 0.0));
         let letters_still: f32 = plain.lines[0].glyphs[0].advance;
-        let para = ParagraphStyle { letter_spacing: [0.0, 0.0, 0.05], ..base };
+        let para = ParagraphStyle {
+            letter_spacing: [0.0, 0.0, 0.05],
+            ..base
+        };
         let spaced = lay(face, text, &para, size, None, width, 100.0, (0.0, 0.0));
         let letters_moved = spaced.lines[0].glyphs[0].advance;
-        assert!(letters_moved > letters_still + 1.0, "letter spacing range did not reach the glyphs");
-        assert!((content_end(&spaced.lines[0]) - width).abs() < 0.01, "justified line did not fill the box");
+        assert!(
+            letters_moved > letters_still + 1.0,
+            "letter spacing range did not reach the glyphs"
+        );
+        assert!(
+            (content_end(&spaced.lines[0]) - width).abs() < 0.01,
+            "justified line did not fill the box"
+        );
         // The desired letter spacing (0.0 here) is the base; only the range is
         // used, so the fill is exact.
         assert!(content_end(&plain.lines[0]) > width - 0.01);
@@ -335,7 +490,10 @@ fn every_line_composer_adds_the_measured_tracking_nudge() {
     let every = lay(
         &face,
         &fx.text,
-        &ParagraphStyle { every_line_composer: true, ..Default::default() },
+        &ParagraphStyle {
+            every_line_composer: true,
+            ..Default::default()
+        },
         fx.size,
         Some(fx.leading),
         fx.box_width,
@@ -345,8 +503,18 @@ fn every_line_composer_adds_the_measured_tracking_nudge() {
     let lines: Vec<String> = every.lines.iter().map(chars).collect();
     assert_eq!(lines, fx.lines, "every-line composer breaks");
     for (i, (g, x)) in every.lines[0].glyphs.iter().zip(PHOTOSHOP_X).enumerate() {
-        eprintln!("glyph {i} {:?} ours {:.5} photoshop {x:.5} diff {:.5}", g.ch, g.x, g.x - x);
-        assert!((g.x - x).abs() < 0.04, "line 1 glyph {i} {:?}: x {:.5} vs Photoshop {x:.5}", g.ch, g.x);
+        eprintln!(
+            "glyph {i} {:?} ours {:.5} photoshop {x:.5} diff {:.5}",
+            g.ch,
+            g.x,
+            g.x - x
+        );
+        assert!(
+            (g.x - x).abs() < 0.04,
+            "line 1 glyph {i} {:?}: x {:.5} vs Photoshop {x:.5}",
+            g.ch,
+            g.x
+        );
     }
     // The nudge itself: same layout without the every-line composer keeps the
     // metrics advances, so the difference on the first letter is exactly
@@ -354,7 +522,10 @@ fn every_line_composer_adds_the_measured_tracking_nudge() {
     let single = lay(
         &face,
         &fx.text,
-        &ParagraphStyle { justification: Justification::Left, ..Default::default() },
+        &ParagraphStyle {
+            justification: Justification::Left,
+            ..Default::default()
+        },
         fx.size,
         Some(fx.leading),
         fx.box_width,
@@ -362,11 +533,17 @@ fn every_line_composer_adds_the_measured_tracking_nudge() {
         (fx.box_left, 0.0),
     );
     let delta = every.lines[0].glyphs[0].advance - single.lines[0].glyphs[0].advance;
-    assert!((delta - fx.size * typography::EVERY_LINE_TRACK).abs() < 1e-3, "nudge {delta}");
+    assert!(
+        (delta - fx.size * typography::EVERY_LINE_TRACK).abs() < 1e-3,
+        "nudge {delta}"
+    );
     // The nudge never lands on a space or after one.
     let space = every.lines[0].glyphs.iter().find(|g| g.ch == ' ').unwrap();
     let single_space = single.lines[0].glyphs.iter().find(|g| g.ch == ' ').unwrap();
-    assert!((space.advance - single_space.advance).abs() < 1e-3, "space advance changed by the nudge");
+    assert!(
+        (space.advance - single_space.advance).abs() < 1e-3,
+        "space advance changed by the nudge"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -399,12 +576,30 @@ fn left_hanging_prefix_matches_chars_pdf() {
         ('*', 9.9183),
         ('\u{2026}', 14.2380),
     ];
-    let no_hang: &[(char, f32)] = &[('(', 10.7999), ('[', 11.8440), ('{', 13.6800), ('!', 9.6843), ('?', 15.6241)];
+    let no_hang: &[(char, f32)] = &[
+        ('(', 10.7999),
+        ('[', 11.8440),
+        ('{', 13.6800),
+        ('!', 9.6843),
+        ('?', 15.6241),
+    ];
     with_face(noto(), |face| {
-        let para = ParagraphStyle { hanging: true, ..Default::default() };
+        let para = ParagraphStyle {
+            hanging: true,
+            ..Default::default()
+        };
         for &(ch, shift) in measured {
             let text = format!("{ch}AAAAA");
-            let out = lay(face, &text, &para, 36.0, Some(43.2), 400.0, 200.0, (20.0, 0.0));
+            let out = lay(
+                face,
+                &text,
+                &para,
+                36.0,
+                Some(43.2),
+                400.0,
+                200.0,
+                (20.0, 0.0),
+            );
             assert_eq!(out.lines.len(), 1, "{ch:?}");
             let line = &out.lines[0];
             let got = 20.0 - line.glyphs[0].x;
@@ -415,15 +610,33 @@ fn left_hanging_prefix_matches_chars_pdf() {
             // The rest of the line follows in flow: the next glyph starts at
             // margin + (advance - hang).
             let paid = line.glyphs[0].advance - got;
-            assert!((line.glyphs[1].x - (20.0 + paid)).abs() < 0.01, "{ch:?} next glyph");
+            assert!(
+                (line.glyphs[1].x - (20.0 + paid)).abs() < 0.01,
+                "{ch:?} next glyph"
+            );
         }
         for &(ch, advance) in no_hang {
             let text = format!("{ch}AAAAA");
-            let out = lay(face, &text, &para, 36.0, Some(43.2), 400.0, 200.0, (20.0, 0.0));
+            let out = lay(
+                face,
+                &text,
+                &para,
+                36.0,
+                Some(43.2),
+                400.0,
+                200.0,
+                (20.0, 0.0),
+            );
             let line = &out.lines[0];
             let got = 20.0 - line.glyphs[0].x;
-            assert!(got.abs() < 1e-3, "{ch:?} must not hang (measured shift 0), got {got}");
-            assert!((line.glyphs[1].x - (20.0 + advance)).abs() < 0.01, "{ch:?} advances normally");
+            assert!(
+                got.abs() < 1e-3,
+                "{ch:?} must not hang (measured shift 0), got {got}"
+            );
+            assert!(
+                (line.glyphs[1].x - (20.0 + advance)).abs() < 0.01,
+                "{ch:?} advances normally"
+            );
         }
     });
 }
@@ -435,25 +648,82 @@ fn right_hanging_suffix_does_not_count_in_the_line_fit() {
     // 242 pt box with hanging, where the comma is drawn at pen 261.02 for a
     // 242 pt box at x = 20 (right margin 262) and its ink ends at 267.7.
     with_face(noto(), |face| {
-        let hanging = ParagraphStyle { hanging: true, ..Default::default() };
+        let hanging = ParagraphStyle {
+            hanging: true,
+            ..Default::default()
+        };
         let tight = 242.0;
-        let out = lay(face, "AAAAA BBBBB,", &hanging, 36.0, Some(43.2), tight, 400.0, (20.0, 0.0));
-        assert_eq!(out.lines.len(), 1, "the comma hangs, so the line fits 242 pt");
+        let out = lay(
+            face,
+            "AAAAA BBBBB,",
+            &hanging,
+            36.0,
+            Some(43.2),
+            tight,
+            400.0,
+            (20.0, 0.0),
+        );
+        assert_eq!(
+            out.lines.len(),
+            1,
+            "the comma hangs, so the line fits 242 pt"
+        );
         let line = &out.lines[0];
         let comma = line.glyphs.iter().rfind(|g| g.ch == ',').expect("comma");
         // Content excluding the comma is 241.02 pt (measured threshold), so the
         // comma pen is at x = 20 + 241.02.
-        assert!((comma.x - 261.02).abs() < 0.05, "comma pen {:.3}, Photoshop 261.02", comma.x);
-        assert!(comma.x + comma.advance > 20.0 + tight, "comma must overflow the right margin");
+        assert!(
+            (comma.x - 261.02).abs() < 0.05,
+            "comma pen {:.3}, Photoshop 261.02",
+            comma.x
+        );
+        assert!(
+            comma.x + comma.advance > 20.0 + tight,
+            "comma must overflow the right margin"
+        );
 
         // Without hanging the same box cannot hold the whole string.
-        let ragged = lay(face, "AAAAA BBBBB,", &ParagraphStyle::default(), 36.0, Some(43.2), tight, 400.0, (20.0, 0.0));
-        assert!(ragged.lines.len() > 1, "without hanging the comma has to wrap");
+        let ragged = lay(
+            face,
+            "AAAAA BBBBB,",
+            &ParagraphStyle::default(),
+            36.0,
+            Some(43.2),
+            tight,
+            400.0,
+            (20.0, 0.0),
+        );
+        assert!(
+            ragged.lines.len() > 1,
+            "without hanging the comma has to wrap"
+        );
 
         // ; is not a right-hang character: same break as without hanging.
-        let semi_hanging = lay(face, "AAAAA BBBBB;", &hanging, 36.0, Some(43.2), tight, 400.0, (20.0, 0.0));
-        let semi_ragged = lay(face, "AAAAA BBBBB;", &ParagraphStyle::default(), 36.0, Some(43.2), tight, 400.0, (20.0, 0.0));
-        assert_eq!(semi_hanging.lines.len(), semi_ragged.lines.len(), "';' must not hang");
+        let semi_hanging = lay(
+            face,
+            "AAAAA BBBBB;",
+            &hanging,
+            36.0,
+            Some(43.2),
+            tight,
+            400.0,
+            (20.0, 0.0),
+        );
+        let semi_ragged = lay(
+            face,
+            "AAAAA BBBBB;",
+            &ParagraphStyle::default(),
+            36.0,
+            Some(43.2),
+            tight,
+            400.0,
+            (20.0, 0.0),
+        );
+        assert_eq!(
+            semi_hanging.lines.len(),
+            semi_ragged.lines.len(),
+            "';' must not hang"
+        );
     });
 }
 
@@ -468,40 +738,88 @@ fn justified_line_hangs_the_comma_outside_the_measure() {
     // its two spaces measure 51.328), proving code 6 is "justify all".
     with_face(noto(), |face| {
         let text = "He said, the quick brown fox jumps over the lazy dog, and then left.";
-        let para = ParagraphStyle { hanging: true, justification: Justification::JustifyAll, ..Default::default() };
-        let out = lay(face, text, &para, 36.0, Some(43.2), 300.0, 400.0, (19.999, 0.0));
+        let para = ParagraphStyle {
+            hanging: true,
+            justification: Justification::JustifyAll,
+            ..Default::default()
+        };
+        let out = lay(
+            face,
+            text,
+            &para,
+            36.0,
+            Some(43.2),
+            300.0,
+            400.0,
+            (19.999, 0.0),
+        );
         let texts: Vec<String> = out.lines.iter().map(chars).collect();
         assert_eq!(
             texts,
-            ["He said, the quick", "brown fox jumps", "over the lazy dog,", "and then left."],
+            [
+                "He said, the quick",
+                "brown fox jumps",
+                "over the lazy dog,",
+                "and then left."
+            ],
             "hanging changes the break positions (docs/hanging-punctuation.md)"
         );
         let line3 = &out.lines[2];
         let comma = line3.glyphs.iter().rfind(|g| g.ch == ',').unwrap();
         let rel = comma.x - line3.glyphs[0].x;
-        assert!((rel - 300.010).abs() < 0.02, "comma pen {rel:.3} vs Photoshop 300.010");
+        assert!(
+            (rel - 300.010).abs() < 0.02,
+            "comma pen {rel:.3} vs Photoshop 300.010"
+        );
         // Line 3's interior spaces carry the whole slack.
         for g in line3.glyphs.iter().filter(|g| g.ch == ' ') {
             if g.x + g.advance < comma.x {
-                assert!((g.advance - 13.03812).abs() < 0.02, "space advance {:.5}", g.advance);
+                assert!(
+                    (g.advance - 13.03812).abs() < 0.02,
+                    "space advance {:.5}",
+                    g.advance
+                );
             }
         }
         let line4 = &out.lines[3];
         let period = line4.glyphs.iter().rfind(|g| g.ch == '.').unwrap();
         let rel4 = period.x - line4.glyphs[0].x;
-        assert!((rel4 - 300.011).abs() < 0.02, "period pen {rel4:.3} vs Photoshop 300.011");
+        assert!(
+            (rel4 - 300.011).abs() < 0.02,
+            "period pen {rel4:.3} vs Photoshop 300.011"
+        );
         for g in line4.glyphs.iter().filter(|g| g.ch == ' ') {
-            assert!((g.advance - 51.328).abs() < 0.03, "last line space {:.4} vs Photoshop 51.328", g.advance);
+            assert!(
+                (g.advance - 51.328).abs() < 0.03,
+                "last line space {:.4} vs Photoshop 51.328",
+                g.advance
+            );
         }
 
         // Hanging off: the comma takes part in the justification, so it sits
         // well inside the right margin (no hang).
-        let flat = ParagraphStyle { hanging: false, justification: Justification::JustifyAll, ..Default::default() };
-        let off = lay(face, text, &flat, 36.0, Some(43.2), 300.0, 400.0, (19.999, 0.0));
+        let flat = ParagraphStyle {
+            hanging: false,
+            justification: Justification::JustifyAll,
+            ..Default::default()
+        };
+        let off = lay(
+            face,
+            text,
+            &flat,
+            36.0,
+            Some(43.2),
+            300.0,
+            400.0,
+            (19.999, 0.0),
+        );
         let line3off = &off.lines[2];
         let comma_off = line3off.glyphs.iter().rfind(|g| g.ch == ',').unwrap();
         let rel_off = comma_off.x - line3off.glyphs[0].x;
-        assert!(rel_off < 295.0, "without hanging the comma stays inside, got {rel_off}");
+        assert!(
+            rel_off < 295.0,
+            "without hanging the comma stays inside, got {rel_off}"
+        );
     });
 }
 
@@ -529,7 +847,10 @@ fn kinsoku_keeps_cjk_closing_punctuation_off_the_line_start() {
             }
             let last = line.glyphs.iter().rev().find(|g| g.ch != ' ').map(|g| g.ch);
             if let Some(ch) = last {
-                assert!(typography::kinsoku::may_end_line(ch), "line {i} ends with opening punctuation {ch:?}");
+                assert!(
+                    typography::kinsoku::may_end_line(ch),
+                    "line {i} ends with opening punctuation {ch:?}"
+                );
             }
         }
     });
@@ -542,12 +863,34 @@ fn kinsoku_pulls_a_latin_closing_mark_onto_the_previous_line() {
     // push-in) instead of leaving it stranded at the next line's start.
     with_face(noto(), |face| {
         let text = "aaa ) bbb";
-        let style = TextStyle { size: 36.0, leading: Some(43.2), ..Default::default() };
+        let style = TextStyle {
+            size: 36.0,
+            leading: Some(43.2),
+            ..Default::default()
+        };
         // Just wide enough for "aaa " but not for "aaa ) ".
-        let narrow = lay(face, "aaa", &ParagraphStyle::default(), 36.0, Some(43.2), 1000.0, 200.0, (0.0, 0.0));
+        let narrow = lay(
+            face,
+            "aaa",
+            &ParagraphStyle::default(),
+            36.0,
+            Some(43.2),
+            1000.0,
+            200.0,
+            (0.0, 0.0),
+        );
         let style_w = content_end(&narrow.lines[0]);
         let para = ParagraphStyle::default();
-        let out = layout_area(&face, text, &style, &para, style_w + 2.0, 200.0, (0.0, 0.0), 0.76);
+        let out = layout_area(
+            &face,
+            text,
+            &style,
+            &para,
+            style_w + 2.0,
+            200.0,
+            (0.0, 0.0),
+            0.76,
+        );
         assert!(out.lines.len() > 1, "text must wrap");
         for (i, line) in out.lines.iter().enumerate() {
             if let Some(ch) = line.glyphs.first().map(|g| g.ch) {
@@ -566,19 +909,171 @@ fn hanging_and_kinsoku_tables_are_measured_data() {
     // The tables are the contract between the layout and the probes: guard the
     // measured members so a refactor cannot silently change Photoshop behaviour.
     for ch in [',', '.', '\u{201D}', '\u{2019}', '\u{00BB}', '"', '\'', '-'] {
-        assert_eq!(typography::right_hang_fit(ch), Some(0.0), "{ch:?} right-hang");
+        assert_eq!(
+            typography::right_hang_fit(ch),
+            Some(0.0),
+            "{ch:?} right-hang"
+        );
         assert!(typography::is_right_hang(ch));
     }
-    for ch in [';', ':', '!', '?', ')', ']', '}', '\u{2013}', '\u{2014}', '\u{2026}', '%', '/'] {
-        assert_eq!(typography::right_hang_fit(ch), None, "{ch:?} must not right-hang");
+    for ch in [
+        ';', ':', '!', '?', ')', ']', '}', '\u{2013}', '\u{2014}', '\u{2026}', '%', '/',
+    ] {
+        assert_eq!(
+            typography::right_hang_fit(ch),
+            None,
+            "{ch:?} must not right-hang"
+        );
     }
     for ch in ['\u{201C}', '\u{2018}', '\u{00AB}', ',', '.', '-'] {
-        assert_eq!(typography::left_hang_fit(ch), Some(0.0), "{ch:?} full left-hang");
+        assert_eq!(
+            typography::left_hang_fit(ch),
+            Some(0.0),
+            "{ch:?} full left-hang"
+        );
     }
     for ch in [';', ':', '*', '\u{2026}', '\u{2013}', '\u{2014}'] {
-        assert_eq!(typography::left_hang_fit(ch), Some(0.5), "{ch:?} half left-hang");
+        assert_eq!(
+            typography::left_hang_fit(ch),
+            Some(0.5),
+            "{ch:?} half left-hang"
+        );
     }
     for ch in ['(', '[', '{', '!', '?', '\u{2022}'] {
-        assert_eq!(typography::left_hang_fit(ch), None, "{ch:?} must not left-hang");
+        assert_eq!(
+            typography::left_hang_fit(ch),
+            None,
+            "{ch:?} must not left-hang"
+        );
     }
+}
+
+/// Txt2's composed cache can hand the layout one advance correction per shaped
+/// glyph (the every-line composer's per-run delta or optical kerning). The
+/// corrections move the pen, so a later glyph starts `sum(delta)` further along,
+/// and a wide enough correction changes line breaks because the fit test sees
+/// the corrected widths.
+#[test]
+fn per_glyph_advances_shift_the_pen_and_the_breaks() {
+    let para = ParagraphStyle::default();
+    let style = TextStyle {
+        size: 10.0,
+        ..Default::default()
+    };
+    with_face(noto(), |face| {
+        let plain = layout_area(face, "aa bb", &style, &para, 1.0e7, 1.0e7, (0.0, 0.0), 0.8);
+        let glyphs = |l: &AreaLayout| -> Vec<(char, f32)> {
+            l.lines[0].glyphs.iter().map(|g| (g.ch, g.x)).collect()
+        };
+        let base = glyphs(&plain);
+        let advanced = layout_area_paragraphs_with_advances(
+            face,
+            "aa bb",
+            &style,
+            std::slice::from_ref(&para),
+            1.0e7,
+            1.0e7,
+            (0.0, 0.0),
+            0.8,
+            &[2.0, 2.0, 0.0, 0.0, 0.0],
+        );
+        let moved = glyphs(&advanced);
+        for (i, ((_, x0), (_, x1))) in base.iter().zip(&moved).enumerate() {
+            let shift: f32 = [2.0, 2.0, 0.0, 0.0, 0.0][..i].iter().sum();
+            assert!((x1 - x0 - shift).abs() < 1.0e-3, "{i}: {x0} -> {x1}");
+        }
+        // A measure one point wider than the natural line: widening every
+        // advance makes the line overflow and break.
+        let width = plain.lines[0]
+            .glyphs
+            .iter()
+            .map(|g| g.x + g.advance)
+            .fold(0.0f32, f32::max);
+        let narrow = |advances: &[f32]| {
+            layout_area_paragraphs_with_advances(
+                face,
+                "aa bb",
+                &style,
+                std::slice::from_ref(&para),
+                width + 1.0,
+                1.0e7,
+                (0.0, 0.0),
+                0.8,
+                advances,
+            )
+            .lines
+            .len()
+        };
+        assert_eq!(narrow(&[]), 1);
+        assert!(narrow(&[10.0; 5]) >= 2);
+    });
+}
+
+/// Photoshop's composed cache stores, per glyph, the spacing CoolType applied
+/// on top of the metrics advance (tracking + optical kerning + composer
+/// nudges). The engine subtracts the tracking it already baked into the
+/// advance before adding the correction, so feeding the cache's tracking value
+/// back must not move the pen, while feeding zero must remove the tracking.
+#[test]
+fn composed_advances_are_added_on_top_of_untracked_advances() {
+    let para = ParagraphStyle::default();
+    let style = TextStyle {
+        size: 10.0,
+        tracking: 100,
+        ..Default::default()
+    };
+    with_face(noto(), |face| {
+        let plain = layout_area(face, "aa bb", &style, &para, 1.0e7, 1.0e7, (0.0, 0.0), 0.8);
+        let measure = |l: &AreaLayout| {
+            l.lines[0]
+                .glyphs
+                .iter()
+                .map(|g| (g.x, g.advance))
+                .collect::<Vec<_>>()
+        };
+        let base = measure(&plain);
+        // `tracking / 1000 * size` = 1 pt per glyph: the value CoolType would
+        // record for this run.
+        let same = layout_area_paragraphs_with_advances(
+            face,
+            "aa bb",
+            &style,
+            std::slice::from_ref(&para),
+            1.0e7,
+            1.0e7,
+            (0.0, 0.0),
+            0.8,
+            &[1.0; 5],
+        );
+        for (i, (a, b)) in base.iter().zip(measure(&same).iter()).enumerate() {
+            assert!((a.0 - b.0).abs() < 1.0e-3, "x {i}: {} -> {}", a.0, b.0);
+            assert!(
+                (a.1 - b.1).abs() < 1.0e-3,
+                "advance {i}: {} -> {}",
+                a.1,
+                b.1
+            );
+        }
+        // Zero corrections mean "Photoshop added no spacing", so the engine's
+        // own tracking is dropped: the line becomes 5 pt narrower.
+        let untracked = layout_area_paragraphs_with_advances(
+            face,
+            "aa bb",
+            &style,
+            std::slice::from_ref(&para),
+            1.0e7,
+            1.0e7,
+            (0.0, 0.0),
+            0.8,
+            &[0.0; 5],
+        );
+        let end = |l: &AreaLayout| {
+            l.lines[0]
+                .glyphs
+                .iter()
+                .map(|g| g.x + g.advance)
+                .fold(0.0f32, f32::max)
+        };
+        assert!((end(&plain) - end(&untracked) - 5.0).abs() < 1.0e-2);
+    });
 }

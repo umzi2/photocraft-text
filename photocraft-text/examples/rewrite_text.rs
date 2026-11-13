@@ -134,7 +134,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .replace('&', "&amp;")
                 .replace('<', "&lt;")
                 .replace('>', "&gt;");
-            let patched = replace_between(xmp, "<photoshop:LayerText>", "</photoshop:LayerText>", &escaped);
+            let patched = replace_between(
+                xmp,
+                "<photoshop:LayerText>",
+                "</photoshop:LayerText>",
+                &escaped,
+            );
             res.data = patched.into_bytes();
         }
     }
@@ -142,6 +147,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pixels::refresh_text_layer(&mut file, &new_text)?;
 
     std::fs::write(&args[2], file.to_bytes()?)?;
-    println!("wrote {} ({} bytes)", args[2], std::fs::metadata(&args[2])?.len());
+    println!(
+        "wrote {} ({} bytes)",
+        args[2],
+        std::fs::metadata(&args[2])?.len()
+    );
     Ok(())
 }

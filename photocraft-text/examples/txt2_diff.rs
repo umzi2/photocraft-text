@@ -47,7 +47,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let right = txt2_block(&PsdFile::from_bytes(&std::fs::read(&a[2])?)?)?;
     let (ln, used_l) = parse(&left)?;
     let (rn, used_r) = parse(&right)?;
-    eprintln!("parsed left {used_l}/{} bytes as {}, right {used_r}/{} as {}", left.len(), ln.show(), right.len(), rn.show());
+    eprintln!(
+        "parsed left {used_l}/{} bytes as {}, right {used_r}/{} as {}",
+        left.len(),
+        ln.show(),
+        right.len(),
+        rn.show()
+    );
     if std::env::var_os("TXT2_PATHS").is_some() {
         let mut out = Vec::new();
         leaves("", &ln, &mut out);
@@ -109,7 +115,8 @@ fn value(
                 }
                 if dict {
                     let key_tok = &toks[*i];
-                    let key = String::from_utf8_lossy(&block[key_tok.start..key_tok.end]).to_string();
+                    let key =
+                        String::from_utf8_lossy(&block[key_tok.start..key_tok.end]).to_string();
                     *i += 1;
                     let v = value(block, toks, i)?;
                     entries.push((key.trim_start_matches('/').to_string(), v));
@@ -117,7 +124,11 @@ fn value(
                     items.push(value(block, toks, i)?);
                 }
             }
-            Ok(if dict { Node::Dict(entries) } else { Node::Array(items) })
+            Ok(if dict {
+                Node::Dict(entries)
+            } else {
+                Node::Array(items)
+            })
         }
         Kind::Str(_) => {
             *i += 1;
@@ -154,14 +165,7 @@ fn leaves(path: &str, node: &Node, out: &mut Vec<String>) {
     }
 }
 
-fn diff(
-    path: &str,
-    left: &Node,
-    right: &Node,
-    _lb: &[u8],
-    _rb: &[u8],
-    out: &mut Vec<String>,
-) {
+fn diff(path: &str, left: &Node, right: &Node, _lb: &[u8], _rb: &[u8], out: &mut Vec<String>) {
     match (left, right) {
         (Node::Dict(a), Node::Dict(b)) => {
             for (key, lv) in a {

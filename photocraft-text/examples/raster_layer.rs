@@ -10,10 +10,10 @@ use photocraft_psd::builder::{LayerSpec, PixelData, PsdBuilder};
 use photocraft_psd::{ColorMode, Compression};
 use photocraft_text::area::{Justification, ParagraphStyle};
 use photocraft_text::font::Face;
-use photocraft_text::layer_render::{render_text_layer, LayerTextStyle};
+use photocraft_text::layer_render::{LayerTextStyle, render_text_layer};
 use photocraft_text::layout::TextStyle;
-use photocraft_text::runs::FontSet;
 use photocraft_text::raster::Canvas;
+use photocraft_text::runs::FontSet;
 
 struct Spec {
     text: String,
@@ -40,14 +40,27 @@ fn parse_just(s: &str) -> Justification {
 
 fn rgb(hex: &str) -> [u8; 3] {
     let v = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0);
-    [((v >> 16) & 0xff) as u8, ((v >> 8) & 0xff) as u8, (v & 0xff) as u8]
+    [
+        ((v >> 16) & 0xff) as u8,
+        ((v >> 8) & 0xff) as u8,
+        (v & 0xff) as u8,
+    ]
 }
 
 fn load(path: &str) -> Result<Spec, Box<dyn std::error::Error>> {
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
-    let num = |k: &str, d: f32| v.get(k).and_then(|x| x.as_f64()).map(|x| x as f32).unwrap_or(d);
+    let num = |k: &str, d: f32| {
+        v.get(k)
+            .and_then(|x| x.as_f64())
+            .map(|x| x as f32)
+            .unwrap_or(d)
+    };
     Ok(Spec {
-        text: v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        text: v
+            .get("text")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
         size: num("size", 36.0),
         x: num("x", 0.0),
         y: num("y", 0.0),
@@ -62,8 +75,12 @@ fn load(path: &str) -> Result<Spec, Box<dyn std::error::Error>> {
         tracking: num("tracking", 0.0) as i16,
         leading: num("leading", 0.0),
         canvas: (
-            v.get("canvas_width").and_then(|x| x.as_u64()).unwrap_or(1200) as u32,
-            v.get("canvas_height").and_then(|x| x.as_u64()).unwrap_or(800) as u32,
+            v.get("canvas_width")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(1200) as u32,
+            v.get("canvas_height")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(800) as u32,
         ),
     })
 }
@@ -81,10 +98,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let style = TextStyle {
         size: spec.size,
         tracking: spec.tracking,
-        leading: Some(if spec.leading > 0.0 { spec.leading } else { spec.size * 1.2 }),
+        leading: Some(if spec.leading > 0.0 {
+            spec.leading
+        } else {
+            spec.size * 1.2
+        }),
         ..Default::default()
     };
-    let para = ParagraphStyle { justification: parse_just(&spec.justification), ..Default::default() };
+    let para = ParagraphStyle {
+        justification: parse_just(&spec.justification),
+        ..Default::default()
+    };
     let layer_spec = LayerTextStyle {
         style,
         paragraph: para,
@@ -131,6 +155,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     builder.composite(PixelData::Rgba8(canvas.pixels));
     std::fs::write(&args[2], builder.to_bytes()?)?;
-    println!("wrote {} ({}x{})", &args[2], rendered.width, rendered.height);
+    println!(
+        "wrote {} ({}x{})",
+        &args[2], rendered.width, rendered.height
+    );
     Ok(())
 }

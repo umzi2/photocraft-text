@@ -90,7 +90,8 @@ impl<'a> Face<'a> {
         };
         let mut r = Reader::at(data, base)?;
         let sfnt_version = r.u32()?;
-        if sfnt_version != 0x0001_0000 && sfnt_version != 0x4F54_544F && sfnt_version != 0x7472_7565 {
+        if sfnt_version != 0x0001_0000 && sfnt_version != 0x4F54_544F && sfnt_version != 0x7472_7565
+        {
             return Err(Error::BadFont("unknown sfnt version"));
         }
         let num_tables = r.u16()?;
@@ -105,10 +106,13 @@ impl<'a> Face<'a> {
         }
 
         let table = |tag: [u8; 4]| -> Option<&'a [u8]> {
-            tables.iter().find(|(t, _, _)| *t == tag).and_then(|(_, off, len)| {
-                let end = off.checked_add(*len)?;
-                data.get(*off..end)
-            })
+            tables
+                .iter()
+                .find(|(t, _, _)| *t == tag)
+                .and_then(|(_, off, len)| {
+                    let end = off.checked_add(*len)?;
+                    data.get(*off..end)
+                })
         };
 
         let head_data = table(TAG_HEAD).ok_or(Error::MissingTable("head"))?;
@@ -119,7 +123,11 @@ impl<'a> Face<'a> {
         let mac_style = hr.u16()?;
         hr.skip(4)?; // lowestRecPPEM, fontDirectionHint
         let index_to_loc_format = hr.i16()?;
-        let head = Head { units_per_em, mac_style, index_to_loc_format };
+        let head = Head {
+            units_per_em,
+            mac_style,
+            index_to_loc_format,
+        };
         if units_per_em == 0 {
             return Err(Error::BadFont("unitsPerEm is zero"));
         }
@@ -132,7 +140,12 @@ impl<'a> Face<'a> {
         let line_gap = hr.i16()?;
         hr.skip(24)?;
         let num_h_metrics = hr.u16()?;
-        let hhea = Hhea { ascender, descender, line_gap, num_h_metrics };
+        let hhea = Hhea {
+            ascender,
+            descender,
+            line_gap,
+            num_h_metrics,
+        };
 
         let maxp_data = table(TAG_MAXP).ok_or(Error::MissingTable("maxp"))?;
         let mut mr = Reader::new(maxp_data);
@@ -151,16 +164,26 @@ impl<'a> Face<'a> {
             .map(|(_, o, l)| (*o, *l))
             .ok_or(Error::MissingTable("cmap"))?;
         let cmap_data = data
-            .get(cmap_start..cmap_start.checked_add(cmap_len).ok_or(Error::BadFont("cmap length"))?)
+            .get(
+                cmap_start
+                    ..cmap_start
+                        .checked_add(cmap_len)
+                        .ok_or(Error::BadFont("cmap length"))?,
+            )
             .ok_or(Error::MissingTable("cmap"))?;
         let (sub_off, sub_fmt) = cmap::pick_subtable(cmap_data)?;
         let cmap_sub = (cmap_start + sub_off, sub_fmt);
 
         let os2 = table(TAG_OS2).map(parse_os2);
-        let kern = table(TAG_KERN).map(|d| kern::Kern::parse(d)).transpose()?.unwrap_or_default();
+        let kern = table(TAG_KERN)
+            .map(|d| kern::Kern::parse(d))
+            .transpose()?
+            .unwrap_or_default();
         let gpos = table(TAG_GPOS).map(|d| gpos::Gpos::parse(d)).transpose()?;
         // `OTTO` faces carry `CFF ` instead of `glyf`; CFF2 is not supported.
-        let cff = table(*b"CFF ").map(|d| cff::Cff::parse(d, units_per_em)).transpose()?;
+        let cff = table(*b"CFF ")
+            .map(|d| cff::Cff::parse(d, units_per_em))
+            .transpose()?;
 
         Ok(Self {
             data,
@@ -211,8 +234,12 @@ impl<'a> Face<'a> {
     pub fn ascent_ratio(&self) -> f32 {
         let upm = self.head.units_per_em as f32;
         for ch in ['d', 'b', 'h', 'H'] {
-            let Some(gid) = self.glyph_index(ch) else { continue };
-            let Some((_, _, _, y_max)) = self.glyph_bbox(gid) else { continue };
+            let Some(gid) = self.glyph_index(ch) else {
+                continue;
+            };
+            let Some((_, _, _, y_max)) = self.glyph_bbox(gid) else {
+                continue;
+            };
             let ratio = y_max / upm;
             if ratio.is_finite() && ratio > 0.0 {
                 return ratio;
@@ -256,13 +283,30 @@ impl<'a> Face<'a> {
     }
 
     pub fn table(&self, tag: [u8; 4]) -> Option<&'a [u8]> {
-        self.tables.iter().find(|(t, _, _)| *t == tag).and_then(|(_, off, len)| {
-            self.data.get(*off..off.checked_add(*len)?)
-        })
+        self.tables
+            .iter()
+            .find(|(t, _, _)| *t == tag)
+            .and_then(|(_, off, len)| self.data.get(*off..off.checked_add(*len)?))
     }
 
     /// Family name from the `name` table (Windows platform, else Macintosh).
     pub fn family_name(&self) -> Option<String> {
+        self.name_record(1)
+    }
+
+    /// PostScript name from the `name` table (name ID 6), the name Photoshop's
+    /// `Txt2` block and `EngineData` use for a run's font.
+    pub fn postscript_name(&self) -> Option<String> {
+        self.name_record(6)
+    }
+
+    /// Full name from the `name` table (name ID 4).
+    pub fn full_name(&self) -> Option<String> {
+        self.name_record(4)
+    }
+
+    /// One `name` table record (preferring Windows, else Macintosh).
+    fn name_record(&self, wanted: u16) -> Option<String> {
         let data = self.table(*b"name")?;
         let count = u16::from_be_bytes([*data.get(2)?, *data.get(3)?]) as usize;
         let storage = u16::from_be_bytes([*data.get(4)?, *data.get(5)?]) as usize;
@@ -273,14 +317,16 @@ impl<'a> Face<'a> {
             let name_id = u16::from_be_bytes([*data.get(at + 6)?, *data.get(at + 7)?]);
             let len = u16::from_be_bytes([*data.get(at + 8)?, *data.get(at + 9)?]) as usize;
             let off = u16::from_be_bytes([*data.get(at + 10)?, *data.get(at + 11)?]) as usize;
-            if name_id != 1 {
+            if name_id != wanted {
                 continue;
             }
             let start = storage.checked_add(off)?;
             let bytes = data.get(start..start.checked_add(len)?)?;
             let text = if platform == 3 {
-                let units: Vec<u16> =
-                    bytes.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+                let units: Vec<u16> = bytes
+                    .chunks_exact(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect();
                 String::from_utf16(&units).ok()
             } else {
                 Some(bytes.iter().map(|b| *b as char).collect())

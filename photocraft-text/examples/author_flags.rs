@@ -34,12 +34,12 @@ mod common_author;
 
 use std::collections::BTreeMap;
 
-use common_author::{author, LayerSpec, ParagraphSpec, RunSpec as AuthorRun};
+use common_author::{LayerSpec, ParagraphSpec, RunSpec as AuthorRun, author};
 use photocraft_psd::PsdFile;
 use photocraft_text::runs::{self, ParagraphFormat, ParagraphRun, RunStyle};
 use photocraft_text::txt2::{
-    self, Capitalization, Hyphenation, Justification, KerningType, ParagraphProperty, RunProperty,
-    Strikethrough, Underline, OLD_STYLE_ON,
+    self, Capitalization, Hyphenation, Justification, KerningType, OLD_STYLE_ON, ParagraphProperty,
+    RunProperty, Strikethrough, Underline,
 };
 
 #[path = "common/pixels.rs"]
@@ -181,15 +181,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The text comes from the spec, or is kept from the layer's own block.
     let text = match &spec.text {
         Some(t) => t.clone(),
-        None => txt2::read_text(
-            &file.global_block(b"Txt2").ok_or("no Txt2 block")?.data,
-        )
-        .ok_or("no layer text")?,
+        None => txt2::read_text(&file.global_block(b"Txt2").ok_or("no Txt2 block")?.data)
+            .ok_or("no layer text")?,
     };
     let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
     let units = normalized.encode_utf16().count() + 1;
     let runs = if spec.runs.is_empty() {
-        vec![Run { len: units, ..Run::default() }]
+        vec![Run {
+            len: units,
+            ..Run::default()
+        }]
     } else {
         spec.runs.clone()
     };
@@ -237,7 +238,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             data = txt2::set_run_underline(&data, i, kind)?;
         }
         if let Some(on) = run.strike {
-            let kind = if on { Strikethrough::StrikeBox } else { Strikethrough::Off };
+            let kind = if on {
+                Strikethrough::StrikeBox
+            } else {
+                Strikethrough::Off
+            };
             data = txt2::set_run_strikethrough(&data, i, kind)?;
         }
         if let Some(on) = run.ligatures {
@@ -298,9 +303,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         data = txt2::set_paragraph_hanging_punctuation(&data, i, para.hanging)?;
         data = txt2::set_paragraph_every_line_composer(&data, i, para.every_line_composer)?;
         data = txt2::set_paragraph_hyphenation(&data, i, hyphenation)?;
-        data = txt2::set_paragraph_range(&data, i, ParagraphProperty::WordSpacing, para.word_spacing)?;
-        data = txt2::set_paragraph_range(&data, i, ParagraphProperty::LetterSpacing, para.letter_spacing)?;
-        data = txt2::set_paragraph_range(&data, i, ParagraphProperty::GlyphScaling, para.glyph_scaling)?;
+        data =
+            txt2::set_paragraph_range(&data, i, ParagraphProperty::WordSpacing, para.word_spacing)?;
+        data = txt2::set_paragraph_range(
+            &data,
+            i,
+            ParagraphProperty::LetterSpacing,
+            para.letter_spacing,
+        )?;
+        data = txt2::set_paragraph_range(
+            &data,
+            i,
+            ParagraphProperty::GlyphScaling,
+            para.glyph_scaling,
+        )?;
     }
     if std::env::var("PHOTOCRAFT_TRACE").is_ok() {
         let t = txt2::read_text(&data).unwrap_or_default();
@@ -356,7 +372,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         runs::apply_style_runs(ed, &styles);
         runs::apply_paragraph_runs(ed, &paragraphs);
         runs::apply_paragraph_formats(ed, &formats);
-        if let Some(code) = spec.aa.and_then(photocraft_text::raster::AntiAlias::from_code) {
+        if let Some(code) = spec
+            .aa
+            .and_then(photocraft_text::raster::AntiAlias::from_code)
+        {
             runs::set_antialias(ed, code);
         }
     })?;
@@ -371,9 +390,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let t = txt2::read_text(blk).unwrap_or_default();
         eprintln!("serialized: {:?}", &t[t.len().saturating_sub(40)..]);
         let anchor = b"/1 [ << /0 << /0 (";
-        let a = bytes.windows(anchor.len()).position(|w| w == anchor).unwrap_or(0);
+        let a = bytes
+            .windows(anchor.len())
+            .position(|w| w == anchor)
+            .unwrap_or(0);
         let hex: String = bytes[a + anchor.len() + 300..a + anchor.len() + 340]
-            .iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join(" ");
         eprintln!("in-memory after '(': {hex}");
     }
     std::fs::write(&args[3], bytes)?;
@@ -382,7 +407,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn author_run(run: &Run) -> AuthorRun {
-    let caps = parse_capitalization(run.capitalization.as_deref()).ok().flatten();
+    let caps = parse_capitalization(run.capitalization.as_deref())
+        .ok()
+        .flatten();
     AuthorRun {
         len: run.len,
         font: run.font.clone(),
@@ -413,7 +440,9 @@ fn author_run(run: &Run) -> AuthorRun {
 
 fn author_paragraph(para: &Paragraph) -> ParagraphSpec {
     ParagraphSpec {
-        justification: parse_justification(&para.justification).unwrap_or(Justification::Left).code(),
+        justification: parse_justification(&para.justification)
+            .unwrap_or(Justification::Left)
+            .code(),
         every_line_composer: para.every_line_composer,
         first_line_indent: para.first_line_indent,
         start_indent: para.start_indent,
@@ -453,9 +482,13 @@ fn engine_styles(run_specs: &[Run]) -> Vec<RunStyle> {
                 .flatten()
                 .is_some_and(Underline::engine_underline),
             strikethrough: run.strike.unwrap_or(false),
-            all_caps: parse_capitalization(run.capitalization.as_deref()).ok().flatten()
+            all_caps: parse_capitalization(run.capitalization.as_deref())
+                .ok()
+                .flatten()
                 == Some(Capitalization::AllCaps),
-            small_caps: parse_capitalization(run.capitalization.as_deref()).ok().flatten()
+            small_caps: parse_capitalization(run.capitalization.as_deref())
+                .ok()
+                .flatten()
                 == Some(Capitalization::SmallCaps),
             ligatures: run.ligatures,
             alternate_ligatures: run.alternate_ligatures,
@@ -466,14 +499,20 @@ fn engine_styles(run_specs: &[Run]) -> Vec<RunStyle> {
         .collect()
 }
 
-fn engine_paragraphs(text: &str, para: &Paragraph, justification: Justification) -> Vec<ParagraphRun> {
+fn engine_paragraphs(
+    text: &str,
+    para: &Paragraph,
+    justification: Justification,
+) -> Vec<ParagraphRun> {
     text.split('\r')
         .map(|p| ParagraphRun {
             len: p.encode_utf16().count() + 1,
             word_spacing: para.word_spacing,
             letter_spacing: para.letter_spacing,
             glyph_scaling: para.glyph_scaling,
-            justification: photocraft_text::area::Justification::from_psd(justification.code() as i32),
+            justification: photocraft_text::area::Justification::from_psd(
+                justification.code() as i32
+            ),
             every_line_composer: para.every_line_composer,
             first_line_indent: para.first_line_indent,
             start_indent: para.start_indent,
@@ -481,6 +520,7 @@ fn engine_paragraphs(text: &str, para: &Paragraph, justification: Justification)
             space_before: 0.0,
             space_after: 0.0,
             auto_leading: para.auto_leading,
+            ..ParagraphRun::default()
         })
         .collect()
 }
@@ -572,14 +612,20 @@ fn report(base: &str, before: &[u8], after: &[u8]) {
     for (engine, slot) in mirrored {
         println!("  EngineData /{engine} mirrors Txt2 /6/{slot}");
     }
-    println!("  EngineData /Language mirrors Txt2 /6/38 through runs::engine_language (German 42 -> 4)");
-    println!("  EngineData AutoHyphenate/HyphenatedWordSize/PreHyphen/PostHyphen/ConsecutiveHyphens/Zone/Hanging mirror Txt2 /5/9..15,21");
+    println!(
+        "  EngineData /Language mirrors Txt2 /6/38 through runs::engine_language (German 42 -> 4)"
+    );
+    println!(
+        "  EngineData AutoHyphenate/HyphenatedWordSize/PreHyphen/PostHyphen/ConsecutiveHyphens/Zone/Hanging mirror Txt2 /5/9..15,21"
+    );
 }
 
 /// Leaf `path -> value` map of a `Txt2` block, so two blocks can be diffed.
 fn leaves(block: &[u8]) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
-    let Ok(toks) = txt2::tokens(block) else { return out };
+    let Ok(toks) = txt2::tokens(block) else {
+        return out;
+    };
     let mut i = 0;
     while i + 1 < toks.len() {
         if let txt2::Kind::Name(key) = &toks[i].kind {

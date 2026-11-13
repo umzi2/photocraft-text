@@ -184,7 +184,9 @@ impl<'a> Parser<'a> {
     fn parse_name(&mut self) -> String {
         let start = self.pos;
         while let Some(c) = self.peek() {
-            if c.is_ascii_whitespace() || matches!(c, b'/' | b'<' | b'>' | b'[' | b']' | b'(' | b')') {
+            if c.is_ascii_whitespace()
+                || matches!(c, b'/' | b'<' | b'>' | b'[' | b']' | b'(' | b')')
+            {
                 break;
             }
             self.pos += 1;
@@ -214,11 +216,14 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        let text = std::str::from_utf8(&self.data[start..self.pos]).map_err(|_| Error::EngineData("bad number"))?;
+        let text = std::str::from_utf8(&self.data[start..self.pos])
+            .map_err(|_| Error::EngineData("bad number"))?;
         if text.contains('.') {
             text.parse::<f64>().map(Value::Float)
         } else {
-            text.parse::<i64>().map(Value::Int).or_else(|_| text.parse::<f64>().map(Value::Float))
+            text.parse::<i64>()
+                .map(Value::Int)
+                .or_else(|_| text.parse::<f64>().map(Value::Float))
         }
         .map_err(|_| Error::EngineData("bad number"))
     }

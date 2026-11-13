@@ -21,13 +21,12 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use photocraft_text::font::Face;
-use photocraft_text::outline::{glyph_contours, glyph_path, path_bbox, Seg};
+use photocraft_text::outline::{Seg, glyph_contours, glyph_path, path_bbox};
 use photocraft_text::raster::Canvas;
 
 const FIXTURE: &str = "tests/data/cff_bbox.json";
 const FONTAS: &str = "/media/H/anime-set/text_detect/fontas";
-const WINE_FONTS: &str =
-    "/home/umzi/.local/share/photocraft/wine/drive_c/windows/Fonts";
+const WINE_FONTS: &str = "/home/umzi/.local/share/photocraft/wine/drive_c/windows/Fonts";
 
 #[derive(serde::Deserialize)]
 struct Fixture {
@@ -109,7 +108,9 @@ fn cff_glyph_bounds_match_fonttools() {
     let mut fonts = 0usize;
     let mut glyphs = 0usize;
     for entry in &fixture.cff_fonts {
-        let Some(data) = read_font(&entry.path) else { continue };
+        let Some(data) = read_font(&entry.path) else {
+            continue;
+        };
         let face = Face::parse(&data).unwrap_or_else(|e| panic!("{}: {e:?}", entry.file));
         assert!(face.has_cff(), "{}: CFF table was not parsed", entry.file);
         assert!(!face.has_glyf(), "{}: unexpected glyf table", entry.file);
@@ -118,7 +119,12 @@ fn cff_glyph_bounds_match_fonttools() {
         // The cmap must agree with fontTools about the glyph ids.
         for (ch, expected_gid) in &entry.glyph_gids {
             let c = ch.chars().next().expect("one character");
-            assert_eq!(face.glyph_index(c), Some(*expected_gid), "{}: cmap '{ch}'", entry.file);
+            assert_eq!(
+                face.glyph_index(c),
+                Some(*expected_gid),
+                "{}: cmap '{ch}'",
+                entry.file
+            );
         }
 
         for (gid, expected) in &entry.bboxes {
@@ -127,10 +133,17 @@ fn cff_glyph_bounds_match_fonttools() {
                 .unwrap_or_else(|e| panic!("{} gid {gid}: outline failed: {e:?}", entry.file));
             let got = path_bbox(&path);
             match expected {
-                None => assert!(got.is_none(), "{} gid {gid}: expected an empty glyph, got {got:?}", entry.file),
+                None => assert!(
+                    got.is_none(),
+                    "{} gid {gid}: expected an empty glyph, got {got:?}",
+                    entry.file
+                ),
                 Some(want) => {
                     let got = got.unwrap_or_else(|| {
-                        panic!("{} gid {gid}: empty outline, expected bbox {want:?}", entry.file)
+                        panic!(
+                            "{} gid {gid}: empty outline, expected bbox {want:?}",
+                            entry.file
+                        )
                     });
                     for i in 0..4 {
                         close(
@@ -157,7 +170,9 @@ fn cff_contours_match_fonttools() {
     let fixture = load();
     let mut fonts = 0usize;
     for entry in &fixture.cff_fonts {
-        let Some(data) = read_font(&entry.path) else { continue };
+        let Some(data) = read_font(&entry.path) else {
+            continue;
+        };
         let face = Face::parse(&data).expect("parse face");
         for (ch, glyph) in &entry.contours {
             let c = ch.chars().next().expect("one character");
@@ -165,8 +180,8 @@ fn cff_contours_match_fonttools() {
                 .glyph_index(c)
                 .unwrap_or_else(|| panic!("{}: no cmap entry for '{ch}'", entry.file));
             assert_eq!(gid, glyph.gid, "{}: gid of '{ch}'", entry.file);
-            let path = glyph_path(&face, gid)
-                .unwrap_or_else(|e| panic!("{} '{ch}': {e:?}", entry.file));
+            let path =
+                glyph_path(&face, gid).unwrap_or_else(|e| panic!("{} '{ch}': {e:?}", entry.file));
             assert_eq!(
                 path.len(),
                 glyph.contours.len(),
@@ -174,9 +189,24 @@ fn cff_contours_match_fonttools() {
                 entry.file
             );
             for (ci, (contour, want)) in path.iter().zip(&glyph.contours).enumerate() {
-                close(contour.start.x, want.start[0], 0.01, &format!("{} '{ch}' contour {ci} start.x", entry.file));
-                close(contour.start.y, want.start[1], 0.01, &format!("{} '{ch}' contour {ci} start.y", entry.file));
-                assert_eq!(contour.segs.len(), want.segs.len(), "{} '{ch}' contour {ci}: segment count", entry.file);
+                close(
+                    contour.start.x,
+                    want.start[0],
+                    0.01,
+                    &format!("{} '{ch}' contour {ci} start.x", entry.file),
+                );
+                close(
+                    contour.start.y,
+                    want.start[1],
+                    0.01,
+                    &format!("{} '{ch}' contour {ci} start.y", entry.file),
+                );
+                assert_eq!(
+                    contour.segs.len(),
+                    want.segs.len(),
+                    "{} '{ch}' contour {ci}: segment count",
+                    entry.file
+                );
                 for (si, (seg, json)) in contour.segs.iter().zip(&want.segs).enumerate() {
                     let tag = json[0].as_str().expect("segment tag");
                     let nums: Vec<f32> = json[1..]
@@ -198,7 +228,9 @@ fn cff_contours_match_fonttools() {
                             close(to.x, nums[4], 0.01, "cubic x");
                             close(to.y, nums[5], 0.01, "cubic y");
                         }
-                        Seg::Quad { .. } => panic!("{} '{ch}': CFF produced a quadratic segment", entry.file),
+                        Seg::Quad { .. } => {
+                            panic!("{} '{ch}': CFF produced a quadratic segment", entry.file)
+                        }
                     }
                 }
             }
@@ -215,20 +247,33 @@ fn ascent_ratio_matches_exact_d_bbox() {
     let fixture = load();
     let mut checked = 0usize;
     for entry in fixture.cff_fonts.iter().chain(&fixture.reference_fonts) {
-        let Some(data) = read_font(&entry.path) else { continue };
+        let Some(data) = read_font(&entry.path) else {
+            continue;
+        };
         let face = Face::parse(&data).expect("parse face");
         let expected = entry
             .ascent_ratio
             .unwrap_or_else(|| panic!("{}: fixture has no exact ascent ratio", entry.file));
-        close(face.ascent_ratio(), expected, 2e-4, &format!("{} ascent_ratio", entry.file));
+        close(
+            face.ascent_ratio(),
+            expected,
+            2e-4,
+            &format!("{} ascent_ratio", entry.file),
+        );
 
         let upm = face.units_per_em() as f32;
         for (ch, want) in &entry.ratios {
-            let (Some(want), Some(gid)) = (want, face.glyph_index(ch.chars().next().unwrap())) else {
+            let (Some(want), Some(gid)) = (want, face.glyph_index(ch.chars().next().unwrap()))
+            else {
                 continue;
             };
             let bbox = face.glyph_bbox(gid).expect("glyph bbox");
-            close(bbox.3 / upm, *want, 2e-4, &format!("{} '{ch}' yMax/upm", entry.file));
+            close(
+                bbox.3 / upm,
+                *want,
+                2e-4,
+                &format!("{} '{ch}' yMax/upm", entry.file),
+            );
         }
         checked += 1;
     }
@@ -248,7 +293,9 @@ fn ascent_ratio_matches_photoshop_probe() {
             eprintln!("skip mis-associated measurement {} = {}", m.font, m.ratio);
             continue;
         }
-        let Some(data) = read_font(&m.file) else { continue };
+        let Some(data) = read_font(&m.file) else {
+            continue;
+        };
         let face = Face::parse(&data).expect("parse face");
         assert_eq!(face.units_per_em(), m.upm, "{}", m.font);
         close(
@@ -271,11 +318,17 @@ fn named_photoshop_ratios() {
         ("CCMeanwhile.otf", "CCMeanwhile", 0.813),
         ("CCSpellcaster.otf", "CCSpellcaster", 0.840),
         ("v_AgencyFB_v1.1.ttf", "v_AgencyFB-Reg", 0.7644),
-        ("VSC_Fix_Teslics_Document_Cyr.otf", "TeslicsDocumentCyr-Normal", 0.826),
+        (
+            "VSC_Fix_Teslics_Document_Cyr.otf",
+            "TeslicsDocumentCyr-Normal",
+            0.826,
+        ),
     ];
     for (file, name, want) in cases {
         let path = format!("{FONTAS}/{file}");
-        let Some(data) = read_font(&path) else { continue };
+        let Some(data) = read_font(&path) else {
+            continue;
+        };
         let face = Face::parse(&data).expect("parse face");
         close(face.ascent_ratio(), want, 0.0015, name);
     }
@@ -292,7 +345,12 @@ fn glyf_bbox_uses_curve_extrema() {
     let gid = face.glyph_index('d').expect("'d' in Vampire95");
     let (_, _, _, y_max) = face.glyph_bbox(gid).expect("bbox");
     close(y_max, 466.0274, 0.01, "Vampire95 'd' exact yMax");
-    close(face.ascent_ratio(), 0.4660274, 2e-4, "Vampire95 ascent ratio");
+    close(
+        face.ascent_ratio(),
+        0.4660274,
+        2e-4,
+        "Vampire95 ascent ratio",
+    );
     assert!(
         y_max < 466.9,
         "glyf header yMax (467) leaked into the bbox: {y_max}; curve extrema were not solved"
@@ -355,7 +413,9 @@ fn outline_flavour_dispatch() {
     ];
     for (file, has_cff, has_glyf) in cases {
         let path = format!("{FONTAS}/{file}");
-        let Some(data) = read_font(&path) else { continue };
+        let Some(data) = read_font(&path) else {
+            continue;
+        };
         let face = Face::parse(&data).expect("parse face");
         assert_eq!(face.has_cff(), has_cff, "{file}: has_cff");
         assert_eq!(face.has_glyf(), has_glyf, "{file}: has_glyf");
@@ -369,10 +429,17 @@ fn outline_flavour_dispatch() {
 fn cff_same_file_same_outlines() {
     let local = format!("{FONTAS}/CCMeanwhile.otf");
     let installed = format!("{WINE_FONTS}/CCMeanwhile.otf");
-    let (Some(a), Some(b)) = (read_font(&local), read_font(&installed)) else { return };
-    let (fa, fb) = (Face::parse(&a).expect("local face"), Face::parse(&b).expect("installed face"));
+    let (Some(a), Some(b)) = (read_font(&local), read_font(&installed)) else {
+        return;
+    };
+    let (fa, fb) = (
+        Face::parse(&a).expect("local face"),
+        Face::parse(&b).expect("installed face"),
+    );
     for ch in ['d', 'o', 'A', 'g'] {
-        let (Some(ga), Some(gb)) = (fa.glyph_index(ch), fb.glyph_index(ch)) else { continue };
+        let (Some(ga), Some(gb)) = (fa.glyph_index(ch), fb.glyph_index(ch)) else {
+            continue;
+        };
         assert_eq!(
             glyph_path(&fa, ga).expect("local path"),
             glyph_path(&fb, gb).expect("installed path"),

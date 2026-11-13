@@ -43,7 +43,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(dir) = &atlas_dir {
         match photocraft_text::atlas::Atlas::load(dir) {
             Ok(atlas) => {
-                println!("atlas: {} @ {} pt, {} glyphs", atlas.font, atlas.size, atlas.len());
+                println!(
+                    "atlas: {} @ {} pt, {} glyphs",
+                    atlas.font,
+                    atlas.size,
+                    atlas.len()
+                );
                 store.set_atlas(atlas);
             }
             Err(e) => eprintln!("atlas: {e}"),
@@ -71,7 +76,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let listener = TcpListener::bind(("127.0.0.1", port))?;
-    println!("live editor: http://127.0.0.1:{port}/  (fonts: {})", fonts.display());
+    println!(
+        "live editor: http://127.0.0.1:{port}/  (fonts: {})",
+        fonts.display()
+    );
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         let store = store.clone();
@@ -157,7 +165,12 @@ fn serve(
         None => (target, ""),
     };
     if path == "/" || path == "/index.html" {
-        return respond(&mut stream, "200 OK", "text/html; charset=utf-8", PAGE.as_bytes());
+        return respond(
+            &mut stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            PAGE.as_bytes(),
+        );
     }
     if (path == "/render" || path == "/render.png") && !body.is_empty() {
         return match render_json(store, &body) {
@@ -273,11 +286,16 @@ impl Query {
     }
 
     fn get(&self, key: &str) -> Option<&str> {
-        self.0.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+        self.0
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
     }
 
     fn f32(&self, key: &str, default: f32) -> f32 {
-        self.get(key).and_then(|v| v.parse().ok()).unwrap_or(default)
+        self.get(key)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
     }
 
     fn flag(&self, key: &str) -> bool {
@@ -339,7 +357,11 @@ fn render_json(store: &FaceStore, body: &[u8]) -> Result<Vec<u8>, Box<dyn std::e
         runs.push(filler);
     }
     if runs.is_empty() {
-        runs.push(RunStyle { len: total.max(1), size: Some(48.0), ..RunStyle::default() });
+        runs.push(RunStyle {
+            len: total.max(1),
+            size: Some(48.0),
+            ..RunStyle::default()
+        });
     }
     let first = &runs[0];
     let paragraph = &spec.paragraph;
@@ -359,7 +381,9 @@ fn render_json(store: &FaceStore, body: &[u8]) -> Result<Vec<u8>, Box<dyn std::e
             auto_leading: paragraph.auto_leading,
         },
         paragraph: photocraft_text::area::ParagraphStyle {
-            justification: photocraft_text::area::Justification::from_psd(paragraph.justification as i32),
+            justification: photocraft_text::area::Justification::from_psd(
+                paragraph.justification as i32,
+            ),
             first_line_indent: paragraph.first_line_indent,
             start_indent: paragraph.start_indent,
             end_indent: paragraph.end_indent,
@@ -383,7 +407,9 @@ fn render_json(store: &FaceStore, body: &[u8]) -> Result<Vec<u8>, Box<dyn std::e
         color: first.color.unwrap_or([0, 0, 0]),
     };
     let options = RenderOptions {
-        aa: spec.aa.and_then(photocraft_text::raster::AntiAlias::from_code),
+        aa: spec
+            .aa
+            .and_then(photocraft_text::raster::AntiAlias::from_code),
         use_atlas: spec.atlas.unwrap_or(true),
     };
     let pixels = store.render_spec_with(text, &runs, &layer, options)?;
@@ -419,10 +445,7 @@ fn run_style_of(run: &common_author::RunSpec) -> RunStyle {
 /// The style-run table Photoshop reads must cover the text *plus* its trailing
 /// U+000D terminator, which the editor's lengths (plain text units) do not, so
 /// the terminator is added to the last run here.
-fn export_psd(
-    template: &Path,
-    body: &[u8],
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn export_psd(template: &Path, body: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut spec: common_author::LayerSpec = serde_json::from_slice(body)?;
     let total = spec
         .text
@@ -483,7 +506,10 @@ fn render(store: &FaceStore, q: &Query) -> Result<Vec<u8>, photocraft_text::erro
         color,
     };
     let options = RenderOptions {
-        aa: q.get("aa").and_then(|v| v.parse().ok()).and_then(photocraft_text::raster::AntiAlias::from_code),
+        aa: q
+            .get("aa")
+            .and_then(|v| v.parse().ok())
+            .and_then(photocraft_text::raster::AntiAlias::from_code),
         use_atlas: q.flag("atlas"),
     };
     let pixels = store.render_spec_with(text, &[run], &spec, options)?;
@@ -550,7 +576,11 @@ fn crc32(data: &[u8]) -> u32 {
     for &b in data {
         crc ^= b as u32;
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
         }
     }
     !crc

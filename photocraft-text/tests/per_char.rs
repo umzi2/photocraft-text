@@ -11,16 +11,22 @@
 
 use std::path::PathBuf;
 
-use photocraft_text::area::{layout_area_runs, ParagraphStyle};
+use photocraft_text::area::{ParagraphStyle, layout_area_runs};
 use photocraft_text::engine_data::Value;
 use photocraft_text::font::Face;
-use photocraft_text::layer_render::{render_from_engine_data, FaceStore, LayerPixels};
+use photocraft_text::layer_render::{FaceStore, LayerPixels, render_from_engine_data};
 use photocraft_text::layout::TextStyle;
 use photocraft_text::runs::{self, FontSet, RunStyle};
 
 fn font_path(name: &str) -> PathBuf {
     let home = std::env::var("HOME").expect("HOME");
-    [&home, ".local/share/photocraft/wine/drive_c/windows/Fonts", name].iter().collect()
+    [
+        &home,
+        ".local/share/photocraft/wine/drive_c/windows/Fonts",
+        name,
+    ]
+    .iter()
+    .collect()
 }
 
 fn font_bytes(name: &str) -> Vec<u8> {
@@ -33,15 +39,27 @@ fn sans() -> Vec<u8> {
 }
 
 fn base() -> TextStyle {
-    TextStyle { size: 24.0, ..TextStyle::default() }
+    TextStyle {
+        size: 24.0,
+        ..TextStyle::default()
+    }
 }
 
 fn run(len: usize) -> RunStyle {
-    RunStyle { len, ..RunStyle::default() }
+    RunStyle {
+        len,
+        ..RunStyle::default()
+    }
 }
 
 /// Lays out `text` with one run per character, from `styles`.
-fn layout_per_char(text: &str, styles: Vec<RunStyle>) -> (Vec<photocraft_text::layout::GlyphPos>, Vec<runs::GlyphAttrs>) {
+fn layout_per_char(
+    text: &str,
+    styles: Vec<RunStyle>,
+) -> (
+    Vec<photocraft_text::layout::GlyphPos>,
+    Vec<runs::GlyphAttrs>,
+) {
     let bytes = sans();
     let fonts = FontSet::new("NotoSans", Face::parse(&bytes).expect("parse"));
     let runs: Vec<RunStyle> = styles
@@ -57,7 +75,10 @@ fn layout_per_char(text: &str, styles: Vec<RunStyle>) -> (Vec<photocraft_text::l
 }
 
 fn sized(size: f32) -> RunStyle {
-    RunStyle { size: Some(size), ..RunStyle::default() }
+    RunStyle {
+        size: Some(size),
+        ..RunStyle::default()
+    }
 }
 
 #[test]
@@ -69,8 +90,16 @@ fn per_character_size_scales_advance_and_height() {
     let plain = Face::parse(&sans_bytes).expect("parse");
     let expect_a = plain.advance(a.gid) as f32 / 1000.0 * 24.0;
     let expect_v = plain.advance(v.gid) as f32 / 1000.0 * 48.0;
-    assert!((a.advance - expect_a).abs() < 0.05, "A advance {} != {expect_a}", a.advance);
-    assert!((v.advance - expect_v).abs() < 0.05, "V advance {} != {expect_v}", v.advance);
+    assert!(
+        (a.advance - expect_a).abs() < 0.05,
+        "A advance {} != {expect_a}",
+        a.advance
+    );
+    assert!(
+        (v.advance - expect_v).abs() < 0.05,
+        "V advance {} != {expect_v}",
+        v.advance
+    );
     assert_eq!(attrs[0].run, 0);
     assert_eq!(attrs[1].run, 1, "second run must own the second glyph");
 }
@@ -80,53 +109,97 @@ fn per_character_size_mid_word_keeps_pen_continuous() {
     // "AB": the B is twice the size of the A, so its origin is exactly the end
     // of A's advance and the line width is A + B, with nothing shared.
     let (pos, _) = layout_per_char("AB", vec![sized(20.0), sized(40.0)]);
-    assert!((pos[1].x - pos[0].advance).abs() < 1e-3, "pen broke at the run boundary: {} vs {}", pos[1].x, pos[0].advance);
+    assert!(
+        (pos[1].x - pos[0].advance).abs() < 1e-3,
+        "pen broke at the run boundary: {} vs {}",
+        pos[1].x,
+        pos[0].advance
+    );
 }
 
 #[test]
 fn per_character_baseline_shift_lifts_only_that_glyph() {
-    let shifted = RunStyle { baseline_shift: Some(10.0), ..RunStyle::default() };
+    let shifted = RunStyle {
+        baseline_shift: Some(10.0),
+        ..RunStyle::default()
+    };
     let (pos, _) = layout_per_char("HH", vec![run(1), shifted]);
     // Baseline shift is applied by the renderer, not the pen; x stays put and
     // the glyph keeps its own advance.
-    assert!((pos[1].x - pos[0].advance).abs() < 1e-3, "baseline shift moved the pen");
+    assert!(
+        (pos[1].x - pos[0].advance).abs() < 1e-3,
+        "baseline shift moved the pen"
+    );
 }
 
 #[test]
 fn per_character_horizontal_scale_stretches_advance_only() {
-    let wide = RunStyle { horizontal_scale: Some(1.5), ..RunStyle::default() };
+    let wide = RunStyle {
+        horizontal_scale: Some(1.5),
+        ..RunStyle::default()
+    };
     let (plain, _) = layout_per_char("AA", vec![run(1), run(1)]);
     let (scaled, _) = layout_per_char("AA", vec![run(1), wide]);
-    assert!((scaled[1].x - plain[1].x).abs() < 1e-3, "horizontal scale moved the second origin");
+    assert!(
+        (scaled[1].x - plain[1].x).abs() < 1e-3,
+        "horizontal scale moved the second origin"
+    );
     let ratio = scaled[1].advance / plain[1].advance;
     assert!((ratio - 1.5).abs() < 1e-3, "advance ratio {ratio} != 1.5");
 }
 
 #[test]
 fn per_character_vertical_scale_does_not_touch_advance() {
-    let tall = RunStyle { vertical_scale: Some(2.0), ..RunStyle::default() };
+    let tall = RunStyle {
+        vertical_scale: Some(2.0),
+        ..RunStyle::default()
+    };
     let (plain, _) = layout_per_char("AA", vec![run(1), run(1)]);
     let (scaled, attrs) = layout_per_char("AA", vec![run(1), tall]);
     assert!((scaled[1].advance - plain[1].advance).abs() < 1e-3);
-    assert!((attrs[1].vertical_scale - 2.0).abs() < 1e-6, "vertical scale {} != 2", attrs[1].vertical_scale);
+    assert!(
+        (attrs[1].vertical_scale - 2.0).abs() < 1e-6,
+        "vertical scale {} != 2",
+        attrs[1].vertical_scale
+    );
     assert!((attrs[0].vertical_scale - 1.0).abs() < 1e-6);
 }
 
 #[test]
 fn per_character_tracking_widens_only_the_tracked_run() {
-    let loose = RunStyle { tracking: Some(200), ..RunStyle::default() };
+    let loose = RunStyle {
+        tracking: Some(200),
+        ..RunStyle::default()
+    };
     let (plain, _) = layout_per_char("AAA", vec![run(1), run(1), run(1)]);
     let (tracked, _) = layout_per_char("AAA", vec![run(1), loose, run(1)]);
     let extra = 200.0 / 1000.0 * 24.0;
-    assert!((tracked[1].x - plain[1].x).abs() < 1e-3, "tracking moved the origin of its own glyph");
-    assert!((tracked[1].advance - plain[1].advance - extra).abs() < 1e-3, "tracked advance {} != {}", tracked[1].advance, plain[1].advance + extra);
-    assert!((tracked[2].x - plain[2].x - extra).abs() < 1e-3, "gap after the tracked run missing");
+    assert!(
+        (tracked[1].x - plain[1].x).abs() < 1e-3,
+        "tracking moved the origin of its own glyph"
+    );
+    assert!(
+        (tracked[1].advance - plain[1].advance - extra).abs() < 1e-3,
+        "tracked advance {} != {}",
+        tracked[1].advance,
+        plain[1].advance + extra
+    );
+    assert!(
+        (tracked[2].x - plain[2].x - extra).abs() < 1e-3,
+        "gap after the tracked run missing"
+    );
 }
 
 #[test]
 fn per_character_colour_is_kept_per_run() {
-    let red = RunStyle { color: Some([255, 0, 0]), ..RunStyle::default() };
-    let blue = RunStyle { color: Some([0, 0, 255]), ..RunStyle::default() };
+    let red = RunStyle {
+        color: Some([255, 0, 0]),
+        ..RunStyle::default()
+    };
+    let blue = RunStyle {
+        color: Some([0, 0, 255]),
+        ..RunStyle::default()
+    };
     let (_, attrs) = layout_per_char("AB", vec![red, blue]);
     assert_eq!(attrs[0].color, [255, 0, 0]);
     assert_eq!(attrs[1].color, [0, 0, 255]);
@@ -139,7 +212,9 @@ fn per_character_colour_is_kept_per_run() {
 fn store() -> FaceStore {
     let mut store = FaceStore::new();
     let home = std::env::var("HOME").expect("HOME");
-    let dir: PathBuf = [&home, ".local/share/photocraft/wine/drive_c/windows/Fonts"].iter().collect();
+    let dir: PathBuf = [&home, ".local/share/photocraft/wine/drive_c/windows/Fonts"]
+        .iter()
+        .collect();
     let loaded = store.load_dir(&dir);
     assert!(loaded > 0, "no fonts loaded from {}", dir.display());
     store
@@ -148,14 +223,23 @@ fn store() -> FaceStore {
 fn engine_data(fonts: &[&str], runs: Vec<RunStyle>, text: &str) -> Value {
     let font_set = fonts
         .iter()
-        .map(|name| Value::dict([("Name", Value::Str(name.to_string())), ("Script", Value::Int(0))]))
+        .map(|name| {
+            Value::dict([
+                ("Name", Value::Str(name.to_string())),
+                ("Script", Value::Int(0)),
+            ])
+        })
         .collect();
     let mut runs = runs;
     let mut covered = 0;
     for r in runs.iter_mut() {
         covered += r.len;
     }
-    assert_eq!(covered, text.encode_utf16().count(), "runs must cover the text");
+    assert_eq!(
+        covered,
+        text.encode_utf16().count(),
+        "runs must cover the text"
+    );
     Value::dict([
         (
             "EngineDict",
@@ -181,7 +265,9 @@ fn glyph_gap(p: &LayerPixels) -> (u32, u32) {
 /// Same, but only rows above `y_limit` (decorations below the baseline would
 /// otherwise close the gap between two glyphs).
 fn glyph_gap_above(p: &LayerPixels, y_limit: u32) -> (u32, u32) {
-    let empty = |x: u32| (0..y_limit.min(p.height)).all(|y| p.rgba[((y * p.width + x) * 4 + 3) as usize] <= 8);
+    let empty = |x: u32| {
+        (0..y_limit.min(p.height)).all(|y| p.rgba[((y * p.width + x) * 4 + 3) as usize] <= 8)
+    };
     let (mut best, mut best_len) = ((0, 0), 0);
     let mut run_start: Option<u32> = None;
     for x in 0..=p.width {
@@ -195,7 +281,10 @@ fn glyph_gap_above(p: &LayerPixels, y_limit: u32) -> (u32, u32) {
             }
         }
     }
-    assert!(best_len >= 2, "no gap between the glyphs (widest empty run {best_len})");
+    assert!(
+        best_len >= 2,
+        "no gap between the glyphs (widest empty run {best_len})"
+    );
     best
 }
 
@@ -215,8 +304,16 @@ fn ink_column_range(p: &LayerPixels, x0: u32, x1: u32) -> Option<(u32, u32)> {
 
 #[test]
 fn per_character_colour_reaches_the_pixels() {
-    let red = RunStyle { color: Some([255, 0, 0]), len: 1, ..RunStyle::default() };
-    let blue = RunStyle { color: Some([0, 0, 255]), len: 1, ..RunStyle::default() };
+    let red = RunStyle {
+        color: Some([255, 0, 0]),
+        len: 1,
+        ..RunStyle::default()
+    };
+    let blue = RunStyle {
+        color: Some([0, 0, 255]),
+        len: 1,
+        ..RunStyle::default()
+    };
     let p = render("HH", vec![red, blue], (200.0, 80.0));
     let (g0, g1) = glyph_gap(&p);
     let sample = |x0: u32, x1: u32| {
@@ -233,47 +330,100 @@ fn per_character_colour_reaches_the_pixels() {
     };
     let left = sample(0, g0);
     let right = sample(g1, p.width);
-    assert!(left[0] > 200 && left[2] < 40, "left glyph is not red: {left:?}");
-    assert!(right[2] > 200 && right[0] < 40, "right glyph is not blue: {right:?}");
+    assert!(
+        left[0] > 200 && left[2] < 40,
+        "left glyph is not red: {left:?}"
+    );
+    assert!(
+        right[2] > 200 && right[0] < 40,
+        "right glyph is not blue: {right:?}"
+    );
 }
 
 #[test]
 fn per_character_size_changes_rendered_cap_height() {
-    let small = RunStyle { size: Some(24.0), len: 1, ..RunStyle::default() };
-    let big = RunStyle { size: Some(48.0), len: 1, ..RunStyle::default() };
+    let small = RunStyle {
+        size: Some(24.0),
+        len: 1,
+        ..RunStyle::default()
+    };
+    let big = RunStyle {
+        size: Some(48.0),
+        len: 1,
+        ..RunStyle::default()
+    };
     let p = render("HH", vec![small, big], (240.0, 120.0));
     let (g0, g1) = glyph_gap(&p);
     let lo = ink_column_range(&p, 0, g0).expect("left ink");
     let ro = ink_column_range(&p, g1, p.width).expect("right ink");
     let (lh, rh) = (lo.1 - lo.0, ro.1 - ro.0);
     let ratio = rh as f32 / lh as f32;
-    assert!((ratio - 2.0).abs() < 0.12, "cap height ratio {ratio} != 2 ({lh} vs {rh})");
-    assert!(lo.0 - ro.0 > (lh / 2) as u32, "the larger glyph must rise above the small one (tops {} {})", lo.0, ro.0);
-    assert!(ro.1.abs_diff(lo.1) <= 2, "both glyphs share the baseline (bottoms {} {})", lo.1, ro.1);
+    assert!(
+        (ratio - 2.0).abs() < 0.12,
+        "cap height ratio {ratio} != 2 ({lh} vs {rh})"
+    );
+    assert!(
+        lo.0 - ro.0 > (lh / 2) as u32,
+        "the larger glyph must rise above the small one (tops {} {})",
+        lo.0,
+        ro.0
+    );
+    assert!(
+        ro.1.abs_diff(lo.1) <= 2,
+        "both glyphs share the baseline (bottoms {} {})",
+        lo.1,
+        ro.1
+    );
 }
 
 #[test]
 fn per_character_baseline_shift_moves_rendered_ink() {
-    let up = RunStyle { baseline_shift: Some(12.0), len: 1, ..RunStyle::default() };
-    let plain = RunStyle { len: 1, ..RunStyle::default() };
+    let up = RunStyle {
+        baseline_shift: Some(12.0),
+        len: 1,
+        ..RunStyle::default()
+    };
+    let plain = RunStyle {
+        len: 1,
+        ..RunStyle::default()
+    };
     let p = render("HH", vec![plain, up], (240.0, 120.0));
     let (g0, g1) = glyph_gap(&p);
     let lo = ink_column_range(&p, 0, g0).expect("left ink");
     let ro = ink_column_range(&p, g1, p.width).expect("right ink");
-    assert!(ro.1 < lo.1 - 8, "shifted glyph did not rise: left bottom {} right bottom {}", lo.1, ro.1);
-    assert!((ro.0 as i32 - lo.0 as i32 + 12).abs() <= 2, "shift {} != 12", lo.0 as i32 - ro.0 as i32);
+    assert!(
+        ro.1 < lo.1 - 8,
+        "shifted glyph did not rise: left bottom {} right bottom {}",
+        lo.1,
+        ro.1
+    );
+    assert!(
+        (ro.0 as i32 - lo.0 as i32 + 12).abs() <= 2,
+        "shift {} != 12",
+        lo.0 as i32 - ro.0 as i32
+    );
 }
 
 #[test]
 fn per_character_vertical_scale_stretches_rendered_ink() {
-    let tall = RunStyle { vertical_scale: Some(2.0), len: 1, ..RunStyle::default() };
-    let plain = RunStyle { len: 1, ..RunStyle::default() };
+    let tall = RunStyle {
+        vertical_scale: Some(2.0),
+        len: 1,
+        ..RunStyle::default()
+    };
+    let plain = RunStyle {
+        len: 1,
+        ..RunStyle::default()
+    };
     let p = render("HH", vec![plain, tall], (240.0, 160.0));
     let (g0, g1) = glyph_gap(&p);
     let lo = ink_column_range(&p, 0, g0).expect("left ink");
     let ro = ink_column_range(&p, g1, p.width).expect("right ink");
     let ratio = (ro.1 - ro.0) as f32 / (lo.1 - lo.0) as f32;
-    assert!((ratio - 2.0).abs() < 0.15, "rendered vertical scale {ratio} != 2");
+    assert!(
+        (ratio - 2.0).abs() < 0.15,
+        "rendered vertical scale {ratio} != 2"
+    );
 }
 
 #[test]
@@ -289,15 +439,28 @@ fn per_character_font_switch_uses_the_second_face() {
     fonts.insert("NotoSerif-Regular", serif_face);
     let text = "HH";
     let runs = [
-        RunStyle { len: 1, ..RunStyle::default() },
-        RunStyle { len: 1, font: Some("NotoSerif-Regular".into()), ..RunStyle::default() },
+        RunStyle {
+            len: 1,
+            ..RunStyle::default()
+        },
+        RunStyle {
+            len: 1,
+            font: Some("NotoSerif-Regular".into()),
+            ..RunStyle::default()
+        },
     ];
     let shaped = runs::shape_runs_attrs(&fonts, text, &runs, &base());
     assert_eq!(shaped.len(), 2);
     let serif = fonts.get("NotoSerif-Regular").expect("serif face");
     let expect = serif.advance(serif.glyph_index('H').unwrap()) as f32 / 1000.0 * 24.0;
-    assert!((shaped[1].0.advance - expect).abs() < 0.05, "serif advance {} != {expect}", shaped[1].0.advance);
-    let sans_adv = fonts.default_face().advance(fonts.default_face().glyph_index('H').unwrap()) as f32
+    assert!(
+        (shaped[1].0.advance - expect).abs() < 0.05,
+        "serif advance {} != {expect}",
+        shaped[1].0.advance
+    );
+    let sans_adv = fonts
+        .default_face()
+        .advance(fonts.default_face().glyph_index('H').unwrap()) as f32
         / 1000.0
         * 24.0;
     assert!(
@@ -313,10 +476,21 @@ fn per_character_paragraph_style_still_justifies() {
     let bytes = sans();
     let fonts = FontSet::new("NotoSans-Regular", Face::parse(&bytes).expect("parse"));
     let runs = [
-        RunStyle { len: 1, size: Some(20.0), ..RunStyle::default() },
-        RunStyle { len: 1, size: Some(40.0), ..RunStyle::default() },
+        RunStyle {
+            len: 1,
+            size: Some(20.0),
+            ..RunStyle::default()
+        },
+        RunStyle {
+            len: 1,
+            size: Some(40.0),
+            ..RunStyle::default()
+        },
     ];
-    let para = ParagraphStyle { justification: photocraft_text::area::Justification::JustifyLastLeft, ..ParagraphStyle::default() };
+    let para = ParagraphStyle {
+        justification: photocraft_text::area::Justification::JustifyLastLeft,
+        ..ParagraphStyle::default()
+    };
     let layout = layout_area_runs(
         &fonts,
         "HH",
@@ -336,24 +510,45 @@ fn per_character_paragraph_style_still_justifies() {
         &fonts,
         "HH",
         &[
-            RunStyle { len: 1, size: Some(20.0), ..RunStyle::default() },
-            RunStyle { len: 1, size: Some(20.0), ..RunStyle::default() },
+            RunStyle {
+                len: 1,
+                size: Some(20.0),
+                ..RunStyle::default()
+            },
+            RunStyle {
+                len: 1,
+                size: Some(20.0),
+                ..RunStyle::default()
+            },
         ],
         &base(),
-        &ParagraphStyle { justification: photocraft_text::area::Justification::JustifyLastLeft, ..ParagraphStyle::default() },
+        &ParagraphStyle {
+            justification: photocraft_text::area::Justification::JustifyLastLeft,
+            ..ParagraphStyle::default()
+        },
         240.0,
         120.0,
         (0.0, 0.0),
         0.76,
     );
     let plain_adv = plain_line.lines[0].glyphs[1].advance;
-    assert!(scaled > plain_adv * 0.95, "second glyph lost its own advance");
+    assert!(
+        scaled > plain_adv * 0.95,
+        "second glyph lost its own advance"
+    );
 }
 
 #[test]
 fn per_character_underline_paints_only_its_run() {
-    let plain = RunStyle { len: 1, ..RunStyle::default() };
-    let under = RunStyle { len: 1, underline: true, ..RunStyle::default() };
+    let plain = RunStyle {
+        len: 1,
+        ..RunStyle::default()
+    };
+    let under = RunStyle {
+        len: 1,
+        underline: true,
+        ..RunStyle::default()
+    };
     let p = render("HH", vec![plain, under], (240.0, 120.0));
     // The underline spans its run, so the split has to be found above it.
     let (g0, g1) = glyph_gap_above(&p, p.height.saturating_sub(6));
@@ -374,7 +569,12 @@ fn per_character_underline_paints_only_its_run() {
     };
     let left = ink(0, g0);
     let right = ink(g1, p.width);
-    assert!(right.0 > left.0, "the underlined glyph has no extra ink: {} vs {}", right.0, left.0);
+    assert!(
+        right.0 > left.0,
+        "the underlined glyph has no extra ink: {} vs {}",
+        right.0,
+        left.0
+    );
     assert!(
         right.1 >= left.1 + 2,
         "underline did not paint below the baseline: left bottom {} right bottom {}",
@@ -385,8 +585,16 @@ fn per_character_underline_paints_only_its_run() {
 
 #[test]
 fn per_character_strikethrough_sits_above_the_underline() {
-    let strike = RunStyle { len: 1, strikethrough: true, ..RunStyle::default() };
-    let under = RunStyle { len: 1, underline: true, ..RunStyle::default() };
+    let strike = RunStyle {
+        len: 1,
+        strikethrough: true,
+        ..RunStyle::default()
+    };
+    let under = RunStyle {
+        len: 1,
+        underline: true,
+        ..RunStyle::default()
+    };
     let strike_px = render("H", vec![strike], (160.0, 100.0));
     let under_px = render("H", vec![under], (160.0, 100.0));
     let bottom = |p: &LayerPixels| -> u32 {
@@ -422,13 +630,34 @@ fn per_run_font_paints_its_own_outlines() {
         size: Some(48.0),
         ..RunStyle::default()
     };
-    let regular = RunStyle { len: 1, font_index: Some(0), size: Some(48.0), ..RunStyle::default() };
-    let mixed_ed = engine_data(&["NotoSans-Regular", "NotoSans-Bold"], vec![regular.clone(), bold], "aA");
-    let plain_ed =
-        engine_data(&["NotoSans-Regular"], vec![regular, RunStyle { len: 1, size: Some(48.0), ..RunStyle::default() }], "aA");
+    let regular = RunStyle {
+        len: 1,
+        font_index: Some(0),
+        size: Some(48.0),
+        ..RunStyle::default()
+    };
+    let mixed_ed = engine_data(
+        &["NotoSans-Regular", "NotoSans-Bold"],
+        vec![regular.clone(), bold],
+        "aA",
+    );
+    let plain_ed = engine_data(
+        &["NotoSans-Regular"],
+        vec![
+            regular,
+            RunStyle {
+                len: 1,
+                size: Some(48.0),
+                ..RunStyle::default()
+            },
+        ],
+        "aA",
+    );
     let store = store();
-    let mixed = render_from_engine_data(&store, &mixed_ed, "aA", (0.0, 0.0), (0.0, 0.0)).expect("mixed");
-    let plain = render_from_engine_data(&store, &plain_ed, "aA", (0.0, 0.0), (0.0, 0.0)).expect("plain");
+    let mixed =
+        render_from_engine_data(&store, &mixed_ed, "aA", (0.0, 0.0), (0.0, 0.0)).expect("mixed");
+    let plain =
+        render_from_engine_data(&store, &plain_ed, "aA", (0.0, 0.0), (0.0, 0.0)).expect("plain");
     let ink = |p: &LayerPixels| -> u64 { p.rgba.chunks_exact(4).map(|px| u64::from(px[3])).sum() };
     let (mixed_ink, plain_ink) = (ink(&mixed), ink(&plain));
     assert!(
@@ -463,7 +692,10 @@ fn underline_takes_the_run_colour() {
         best
     };
     let (_, px) = bottom_row(&p);
-    assert!(px[0] > 200 && px[1] < 60 && px[2] < 60, "underline pixel is {px:?}, not red");
+    assert!(
+        px[0] > 200 && px[1] < 60 && px[2] < 60,
+        "underline pixel is {px:?}, not red"
+    );
 }
 
 /// The live editor renders through the single-run path; a property that only
@@ -474,17 +706,33 @@ fn single_run_render_spec_honours_attributes() {
     use photocraft_text::layer_render::{LayerTextStyle, RenderOptions};
     let store = store();
     let spec = LayerTextStyle {
-        style: TextStyle { size: 48.0, ..TextStyle::default() },
+        style: TextStyle {
+            size: 48.0,
+            ..TextStyle::default()
+        },
         paragraph: ParagraphStyle::default(),
         box_size: (0.0, 0.0),
         origin: (0.0, 0.0),
         color: [0, 0, 0],
     };
     let render = |text: &str, patch: &dyn Fn(&mut RunStyle)| {
-        let mut run = RunStyle { len: text.encode_utf16().count(), font: Some("NotoSans-Regular".into()), size: Some(48.0), ..RunStyle::default() };
+        let mut run = RunStyle {
+            len: text.encode_utf16().count(),
+            font: Some("NotoSans-Regular".into()),
+            size: Some(48.0),
+            ..RunStyle::default()
+        };
         patch(&mut run);
         store
-            .render_spec_with(text, &[run], &spec, RenderOptions { aa: None, use_atlas: false })
+            .render_spec_with(
+                text,
+                &[run],
+                &spec,
+                RenderOptions {
+                    aa: None,
+                    use_atlas: false,
+                },
+            )
             .expect("render")
     };
     let base = render("H", &|_| {});
@@ -496,9 +744,19 @@ fn single_run_render_spec_honours_attributes() {
         vscaled.height
     );
     let italic = render("H", &|r| r.faux_italic = true);
-    assert!(italic.width > base.width + 4, "faux italic did not skew ({} -> {})", base.width, italic.width);
+    assert!(
+        italic.width > base.width + 4,
+        "faux italic did not skew ({} -> {})",
+        base.width,
+        italic.width
+    );
     let bold = render("H", &|r| r.faux_bold = true);
-    let ink = |p: &LayerPixels| p.rgba.chunks_exact(4).map(|px| u64::from(px[3])).sum::<u64>();
+    let ink = |p: &LayerPixels| {
+        p.rgba
+            .chunks_exact(4)
+            .map(|px| u64::from(px[3]))
+            .sum::<u64>()
+    };
     assert!(ink(&bold) > ink(&base), "faux bold did not thicken");
     let caps_plain = render("abc", &|_| {});
     let caps_on = render("abc", &|r| r.all_caps = true);
@@ -523,7 +781,10 @@ fn multi_paragraph_point_text_with_per_run_sizes() {
     use photocraft_text::layer_render::{LayerTextStyle, RenderOptions};
     let store = store();
     let spec = LayerTextStyle {
-        style: TextStyle { size: 48.0, ..TextStyle::default() },
+        style: TextStyle {
+            size: 48.0,
+            ..TextStyle::default()
+        },
         paragraph: ParagraphStyle::default(),
         box_size: (0.0, 0.0),
         origin: (0.0, 0.0),
@@ -531,18 +792,45 @@ fn multi_paragraph_point_text_with_per_run_sizes() {
     };
     let text = "Hi\rall";
     let runs = [
-        RunStyle { len: 2, font: Some("NotoSans-Regular".into()), size: Some(96.0), ..RunStyle::default() },
-        RunStyle { len: 4, font: Some("NotoSans-Regular".into()), size: Some(24.0), ..RunStyle::default() },
+        RunStyle {
+            len: 2,
+            font: Some("NotoSans-Regular".into()),
+            size: Some(96.0),
+            ..RunStyle::default()
+        },
+        RunStyle {
+            len: 4,
+            font: Some("NotoSans-Regular".into()),
+            size: Some(24.0),
+            ..RunStyle::default()
+        },
     ];
     let pixels = store
-        .render_spec_with(text, &runs, &spec, RenderOptions { aa: None, use_atlas: false })
+        .render_spec_with(
+            text,
+            &runs,
+            &spec,
+            RenderOptions {
+                aa: None,
+                use_atlas: false,
+            },
+        )
         .expect("render");
     // Two lines of ink: there is a fully transparent band between them.
-    let empty_row = |y: u32| (0..pixels.width).all(|x| pixels.rgba[((y * pixels.width + x) * 4 + 3) as usize] == 0);
+    let empty_row = |y: u32| {
+        (0..pixels.width).all(|x| pixels.rgba[((y * pixels.width + x) * 4 + 3) as usize] == 0)
+    };
     let gaps = (1..pixels.height - 1).filter(|&y| empty_row(y)).count();
-    assert!(gaps > 2, "expected a blank band between the paragraphs, found {gaps} rows");
+    assert!(
+        gaps > 2,
+        "expected a blank band between the paragraphs, found {gaps} rows"
+    );
     // The 96 pt line is visibly taller than the 24 pt one.
-    assert!(pixels.height > 100, "two paragraphs should exceed one line: {}", pixels.height);
+    assert!(
+        pixels.height > 100,
+        "two paragraphs should exceed one line: {}",
+        pixels.height
+    );
 }
 
 #[test]
@@ -550,17 +838,42 @@ fn manual_kerning_moves_the_pair_by_the_stored_value() {
     // `Kerning` is 1/1000 em and only lives in `EngineData` (Photoshop has no
     // measured `Txt2` slot for it), so the rendered pixels are the oracle.
     let text = "AV";
-    let plain = RunStyle { len: 2, auto_kerning: Some(false), kerning: Some(0), ..RunStyle::default() };
-    let tight = RunStyle { len: 2, auto_kerning: Some(false), kerning: Some(-100), ..RunStyle::default() };
+    let plain = RunStyle {
+        len: 2,
+        auto_kerning: Some(false),
+        kerning: Some(0),
+        ..RunStyle::default()
+    };
+    let tight = RunStyle {
+        len: 2,
+        auto_kerning: Some(false),
+        kerning: Some(-100),
+        ..RunStyle::default()
+    };
     let a = render(text, vec![plain], (300.0, 120.0));
     let b = render(text, vec![tight.clone()], (300.0, 120.0));
     let shift = a.width as i32 - b.width as i32;
     // -100/1000 em at the 12 pt default: 1.2 pt, i.e. one pixel at this scale.
-    assert!((shift - 1).abs() <= 1, "ink width {0} vs {1}", a.width, b.width);
+    assert!(
+        (shift - 1).abs() <= 1,
+        "ink width {0} vs {1}",
+        a.width,
+        b.width
+    );
     // The writer must put the pair into the sheet the renderer reads back.
     let value = runs::to_engine_data(&[tight]);
-    let run = value.get("RunArray").and_then(Value::as_array).and_then(|r| r.first()).unwrap();
-    let sheet = run.get("StyleSheet").and_then(|s| s.get("StyleSheetData")).unwrap();
-    assert_eq!(sheet.get("AutoKerning").and_then(Value::as_bool), Some(false));
+    let run = value
+        .get("RunArray")
+        .and_then(Value::as_array)
+        .and_then(|r| r.first())
+        .unwrap();
+    let sheet = run
+        .get("StyleSheet")
+        .and_then(|s| s.get("StyleSheetData"))
+        .unwrap();
+    assert_eq!(
+        sheet.get("AutoKerning").and_then(Value::as_bool),
+        Some(false)
+    );
     assert_eq!(sheet.get("Kerning").and_then(Value::as_i64), Some(-100));
 }

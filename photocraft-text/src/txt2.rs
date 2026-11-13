@@ -115,7 +115,10 @@ pub fn read_text(block: &[u8]) -> Option<String> {
         raw.push(body[i]);
         i += 1;
     }
-    let units: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+    let units: Vec<u16> = raw
+        .chunks_exact(2)
+        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .collect();
     String::from_utf16(&units).ok()
 }
 
@@ -128,7 +131,11 @@ pub fn read_text(block: &[u8]) -> Option<String> {
 /// [`set_run_layout`] and [`set_run_property`].
 pub fn replace_text(block: &[u8], new_text: &str) -> Result<Vec<u8>, Error> {
     let old = read_text(block).ok_or_else(|| Error::Txt2("no text string".into()))?;
-    let bare = |t: &str| t.replace("\r\n", "\r").trim_end_matches(['\r', '\n']).to_owned();
+    let bare = |t: &str| {
+        t.replace("\r\n", "\r")
+            .trim_end_matches(['\r', '\n'])
+            .to_owned()
+    };
     let text = bare(new_text);
     if bare(&old) == text {
         return Ok(block.to_vec());
@@ -136,12 +143,11 @@ pub fn replace_text(block: &[u8], new_text: &str) -> Result<Vec<u8>, Error> {
     let paragraphs: Vec<&str> = text.split('\r').collect();
     let units = text.encode_utf16().count() as i64 + 1;
 
-    if paragraphs.len() == 1
-        && old.encode_utf16().count() == text.encode_utf16().count()
-    {
+    if paragraphs.len() == 1 && old.encode_utf16().count() == text.encode_utf16().count() {
         // Same length, same paragraph structure: splice in place. Photoshop
         // notices the stale layout by itself for this case.
-        let (start, end) = text_span(block).ok_or_else(|| Error::Txt2("text run not found".into()))?;
+        let (start, end) =
+            text_span(block).ok_or_else(|| Error::Txt2("text run not found".into()))?;
         let mut out = block.to_vec();
         out.splice(start..end, utf16(&text));
         return Ok(out);
@@ -152,18 +158,31 @@ pub fn replace_text(block: &[u8], new_text: &str) -> Result<Vec<u8>, Error> {
     out.splice(start..end, utf16(&text));
 
     let trace = std::env::var("PHOTOCRAFT_TRACE_TXT2").is_ok();
-    if trace { eprintln!("replace_text: spliced, /F = {}", find(&out, b"/99 /F").is_some()); }
+    if trace {
+        eprintln!(
+            "replace_text: spliced, /F = {}",
+            find(&out, b"/99 /F").is_some()
+        );
+    }
     // One style run for the whole text; the terminator counts as a unit.
     out = collapse_table(&out, &table_path(true))?;
-    if trace { eprintln!("style collapse, /F = {}", find(&out, b"/99 /F").is_some()); }
+    if trace {
+        eprintln!("style collapse, /F = {}", find(&out, b"/99 /F").is_some());
+    }
     out = set_table_length(&out, &table_path(true), 0, units)?;
-    if trace { eprintln!("style length, /F = {}", find(&out, b"/99 /F").is_some()); }
+    if trace {
+        eprintln!("style length, /F = {}", find(&out, b"/99 /F").is_some());
+    }
 
     // One paragraph run per paragraph, each owning its U+000D break.
     out = collapse_table(&out, &table_path(false))?;
-    if trace { eprintln!("para collapse, /F = {}", find(&out, b"/99 /F").is_some()); }
+    if trace {
+        eprintln!("para collapse, /F = {}", find(&out, b"/99 /F").is_some());
+    }
     out = replicate_table(&out, &table_path(false), paragraphs.len())?;
-    if trace { eprintln!("para replicate, /F = {}", find(&out, b"/99 /F").is_some()); }
+    if trace {
+        eprintln!("para replicate, /F = {}", find(&out, b"/99 /F").is_some());
+    }
     for (i, para) in paragraphs.iter().enumerate() {
         let len = para.encode_utf16().count() as i64 + 1;
         out = set_table_length(&out, &table_path(false), i, len)?;
@@ -174,18 +193,34 @@ pub fn replace_text(block: &[u8], new_text: &str) -> Result<Vec<u8>, Error> {
 /// Length of every paragraph run in UTF-16 units, in text order.
 pub fn paragraph_run_lengths(block: &[u8]) -> Result<Vec<i64>, Error> {
     let toks = tokens(block)?;
-    let open = resolve(&toks, &table_path(false)).ok_or_else(|| Error::Txt2("paragraph table not found".into()))?;
+    let open = resolve(&toks, &table_path(false))
+        .ok_or_else(|| Error::Txt2("paragraph table not found".into()))?;
     let mut j = open + 1;
     let mut out = Vec::new();
-    while !matches!(toks.get(j).ok_or_else(|| Error::Txt2("unterminated paragraph table".into()))?.kind, Kind::ArrayClose) {
+    while !matches!(
+        toks.get(j)
+            .ok_or_else(|| Error::Txt2("unterminated paragraph table".into()))?
+            .kind,
+        Kind::ArrayClose
+    ) {
         let next = skip_value(&toks, j).ok_or_else(|| Error::Txt2("bad paragraph entry".into()))?;
         let entry = toks[j].start..toks[next - 1].end;
         let entry = &block[entry];
         // `/1` inside the entry, before the closing dictionary run.
-        let p = entry.windows(3).rposition(|w| w == b"/1 ").ok_or_else(|| Error::Txt2("paragraph run without length".into()))?;
+        let p = entry
+            .windows(3)
+            .rposition(|w| w == b"/1 ")
+            .ok_or_else(|| Error::Txt2("paragraph run without length".into()))?;
         let rest = &entry[p + 3..];
-        let digits: Vec<u8> = rest.iter().copied().take_while(|b| b.is_ascii_digit() || *b == b'-').collect();
-        let len = std::str::from_utf8(&digits).ok().and_then(|t| t.parse().ok()).ok_or_else(|| Error::Txt2("bad paragraph length".into()))?;
+        let digits: Vec<u8> = rest
+            .iter()
+            .copied()
+            .take_while(|b| b.is_ascii_digit() || *b == b'-')
+            .collect();
+        let len = std::str::from_utf8(&digits)
+            .ok()
+            .and_then(|t| t.parse().ok())
+            .ok_or_else(|| Error::Txt2("bad paragraph length".into()))?;
         out.push(len);
         j = next;
     }
@@ -193,7 +228,12 @@ pub fn paragraph_run_lengths(block: &[u8]) -> Result<Vec<i64>, Error> {
 }
 
 /// Writes `/1` (the run length) of entry `i` in a run table.
-fn set_table_length(block: &[u8], table: &[Step<'_>], i: usize, len: i64) -> Result<Vec<u8>, Error> {
+fn set_table_length(
+    block: &[u8],
+    table: &[Step<'_>],
+    i: usize,
+    len: i64,
+) -> Result<Vec<u8>, Error> {
     let mut p = table.to_vec();
     p.push(Step::Index(i));
     p.push(Step::Key("1"));
@@ -207,7 +247,8 @@ fn replicate_table(block: &[u8], table: &[Step<'_>], count: usize) -> Result<Vec
         return Ok(block.to_vec());
     }
     let toks = tokens(block)?;
-    let open = resolve(&toks, table).ok_or_else(|| Error::Txt2(format!("table not found: {table:?}")))?;
+    let open =
+        resolve(&toks, table).ok_or_else(|| Error::Txt2(format!("table not found: {table:?}")))?;
     let first = open + 1;
     let end = skip_value(&toks, first).ok_or_else(|| Error::Txt2("bad table entry".into()))?;
     let entry = block[toks[first].start..toks[end - 1].end].to_vec();
@@ -236,8 +277,11 @@ fn table_path(style: bool) -> Vec<Step<'static>> {
 /// Replaces an array at `path` with its first element alone.
 fn collapse_table(block: &[u8], path: &[Step<'_>]) -> Result<Vec<u8>, Error> {
     let toks = tokens(block)?;
-    let open = resolve(&toks, path).ok_or_else(|| Error::Txt2(format!("table not found: {path:?}")))?;
-    let first = skip_value(&toks, open + 1).map(|_| open + 1).filter(|&f| f < toks.len());
+    let open =
+        resolve(&toks, path).ok_or_else(|| Error::Txt2(format!("table not found: {path:?}")))?;
+    let first = skip_value(&toks, open + 1)
+        .map(|_| open + 1)
+        .filter(|&f| f < toks.len());
     let first = first.ok_or_else(|| Error::Txt2(format!("empty table: {path:?}")))?;
     let end = skip_value(&toks, first).ok_or_else(|| Error::Txt2("bad first element".into()))?;
     let (s, e) = (toks[first].start, toks[end - 1].end);
@@ -267,7 +311,10 @@ mod tests {
 
     #[test]
     fn reads_the_anchored_text() {
-        assert_eq!(read_text(&sample("Hello World")).as_deref(), Some("Hello World"));
+        assert_eq!(
+            read_text(&sample("Hello World")).as_deref(),
+            Some("Hello World")
+        );
         assert_eq!(read_text(b"no text here"), None);
     }
 
@@ -444,7 +491,12 @@ pub fn tokens(block: &[u8]) -> Result<Vec<Token>, Error> {
                 }
             }
         };
-        out.push(Token { kind, start, end: i, sep_start });
+        out.push(Token {
+            kind,
+            start,
+            end: i,
+            sep_start,
+        });
     }
     Ok(out)
 }
@@ -547,7 +599,13 @@ fn encode_value(v: &Value) -> Vec<u8> {
     match v {
         Value::Int(i) => i.to_string().into_bytes(),
         Value::Real(r) => format_real(*r).into_bytes(),
-        Value::Bool(b) => if *b { b"true".to_vec() } else { b"false".to_vec() },
+        Value::Bool(b) => {
+            if *b {
+                b"true".to_vec()
+            } else {
+                b"false".to_vec()
+            }
+        }
         Value::Name(n) => format!("/{n}").into_bytes(),
     }
 }
@@ -590,10 +648,16 @@ fn resolve(tokens: &[Token], path: &[Step<'_>]) -> Option<usize> {
     for step in path {
         cur = Some(match (step, cur) {
             (Step::Key(k), None) => {
-                top_level(tokens)?.into_iter().find(|(n, _)| n.as_str() == *k)?.1
+                top_level(tokens)?
+                    .into_iter()
+                    .find(|(n, _)| n.as_str() == *k)?
+                    .1
             }
             (Step::Key(k), Some(open)) => {
-                dict_entries(tokens, open)?.into_iter().find(|(n, _)| n.as_str() == *k)?.1
+                dict_entries(tokens, open)?
+                    .into_iter()
+                    .find(|(n, _)| n.as_str() == *k)?
+                    .1
             }
             (Step::Index(n), Some(open)) => {
                 if !matches!(tokens.get(open)?.kind, Kind::ArrayOpen) {
@@ -896,8 +960,8 @@ fn remove_entry(block: &[u8], path: &[Step<'_>]) -> Result<Vec<u8>, Error> {
     let key_index = value_index
         .checked_sub(1)
         .ok_or_else(|| Error::Txt2("entry has no key".into()))?;
-    let next = skip_value(&toks, value_index)
-        .ok_or_else(|| Error::Txt2("entry has no end".into()))?;
+    let next =
+        skip_value(&toks, value_index).ok_or_else(|| Error::Txt2("entry has no end".into()))?;
     let start = toks[key_index].start;
     let end = toks.get(next).map_or(block.len(), |t| t.start);
     let mut out = block.to_vec();
@@ -977,17 +1041,16 @@ pub fn paragraph_property(block: &[u8], i: usize, property: ParagraphProperty) -
 }
 
 /// Reads a `[min desired max]` triple, or `None` when the slot is absent.
-pub fn paragraph_range(
-    block: &[u8],
-    i: usize,
-    property: ParagraphProperty,
-) -> Option<[f32; 3]> {
+pub fn paragraph_range(block: &[u8], i: usize, property: ParagraphProperty) -> Option<[f32; 3]> {
     let mut path = paragraph_props_path(i);
     path.push(Step::Key(property.key()));
     let (start, end) = value_span(&tokens(block).ok()?, &path)?;
     let text = std::str::from_utf8(&block[start..end]).ok()?;
     let body = text.strip_prefix('[')?.split(']').next()?;
-    let nums: Vec<f32> = body.split_whitespace().filter_map(|t| t.parse().ok()).collect();
+    let nums: Vec<f32> = body
+        .split_whitespace()
+        .filter_map(|t| t.parse().ok())
+        .collect();
     match nums.as_slice() {
         [a, b, c] => Some([*a, *b, *c]),
         _ => None,
@@ -1000,11 +1063,20 @@ pub fn set_paragraph_justification(
     i: usize,
     justification: Justification,
 ) -> Result<Vec<u8>, Error> {
-    set_paragraph_property(block, i, ParagraphProperty::Justification, &Value::Int(justification.code()))
+    set_paragraph_property(
+        block,
+        i,
+        ParagraphProperty::Justification,
+        &Value::Int(justification.code()),
+    )
 }
 
 /// Same, from a stored code. Rejects codes Photoshop does not define.
-pub fn set_paragraph_justification_code(block: &[u8], i: usize, code: i64) -> Result<Vec<u8>, Error> {
+pub fn set_paragraph_justification_code(
+    block: &[u8],
+    i: usize,
+    code: i64,
+) -> Result<Vec<u8>, Error> {
     let j = Justification::from_code(code)
         .ok_or_else(|| Error::Txt2(format!("not a justification: {code} (0..6)")))?;
     set_paragraph_justification(block, i, j)
@@ -1018,7 +1090,11 @@ pub fn paragraph_justification(block: &[u8], i: usize) -> Option<Justification> 
 }
 
 /// First-line indent of paragraph run `i`, points (`/5/1`).
-pub fn set_paragraph_first_line_indent(block: &[u8], i: usize, points: f32) -> Result<Vec<u8>, Error> {
+pub fn set_paragraph_first_line_indent(
+    block: &[u8],
+    i: usize,
+    points: f32,
+) -> Result<Vec<u8>, Error> {
     set_paragraph_property(
         block,
         i,
@@ -1062,7 +1138,9 @@ pub fn paragraph_end_indent(block: &[u8], i: usize) -> Option<f32> {
 /// Auto-leading fraction of paragraph run `i` (`/5/7`, `1.2` = 120%).
 pub fn set_paragraph_auto_leading(block: &[u8], i: usize, fraction: f32) -> Result<Vec<u8>, Error> {
     if !(fraction.is_finite() && fraction > 0.0) {
-        return Err(Error::Txt2(format!("not an auto-leading fraction: {fraction}")));
+        return Err(Error::Txt2(format!(
+            "not an auto-leading fraction: {fraction}"
+        )));
     }
     set_paragraph_property(
         block,
@@ -1077,7 +1155,11 @@ pub fn paragraph_auto_leading(block: &[u8], i: usize) -> Option<f32> {
 }
 
 /// Hanging punctuation of paragraph run `i` (`/5/21`).
-pub fn set_paragraph_hanging_punctuation(block: &[u8], i: usize, on: bool) -> Result<Vec<u8>, Error> {
+pub fn set_paragraph_hanging_punctuation(
+    block: &[u8],
+    i: usize,
+    on: bool,
+) -> Result<Vec<u8>, Error> {
     set_paragraph_property(
         block,
         i,
@@ -1128,20 +1210,39 @@ pub fn set_paragraph_hyphenation(
     hyphenation: Hyphenation,
 ) -> Result<Vec<u8>, Error> {
     if !(hyphenation.zone_pt.is_finite() && hyphenation.zone_pt >= 0.0) {
-        return Err(Error::Txt2(format!("not a hyphenation zone: {}", hyphenation.zone_pt)));
+        return Err(Error::Txt2(format!(
+            "not a hyphenation zone: {}",
+            hyphenation.zone_pt
+        )));
     }
     for (prop, value) in [
-        (ParagraphProperty::HyphenateWordSize, hyphenation.words_longer_than),
-        (ParagraphProperty::HyphenateAfterFirst, hyphenation.after_first),
-        (ParagraphProperty::HyphenateBeforeLast, hyphenation.before_last),
+        (
+            ParagraphProperty::HyphenateWordSize,
+            hyphenation.words_longer_than,
+        ),
+        (
+            ParagraphProperty::HyphenateAfterFirst,
+            hyphenation.after_first,
+        ),
+        (
+            ParagraphProperty::HyphenateBeforeLast,
+            hyphenation.before_last,
+        ),
         (ParagraphProperty::HyphenLimit, hyphenation.limit),
     ] {
         if value < 0 {
-            return Err(Error::Txt2(format!("negative hyphenation value {value} for {prop:?}")));
+            return Err(Error::Txt2(format!(
+                "negative hyphenation value {value} for {prop:?}"
+            )));
         }
     }
     let mut out = block.to_vec();
-    out = set_paragraph_property_or_insert(&out, i, ParagraphProperty::Hyphenate, &Value::Bool(hyphenation.hyphenate))?;
+    out = set_paragraph_property_or_insert(
+        &out,
+        i,
+        ParagraphProperty::Hyphenate,
+        &Value::Bool(hyphenation.hyphenate),
+    )?;
     if !hyphenation.hyphenate {
         return Ok(out);
     }
@@ -1234,7 +1335,9 @@ pub fn replace_value(block: &[u8], path: &[Step<'_>], value: &Value) -> Result<V
     let toks = tokens(block)?;
     let v = resolve(&toks, path).ok_or_else(|| Error::Txt2(format!("path not found: {path:?}")))?;
     if matches!(toks[v].kind, Kind::DictOpen | Kind::ArrayOpen) {
-        return Err(Error::Txt2(format!("path is a container, not a scalar: {path:?}")));
+        return Err(Error::Txt2(format!(
+            "path is a container, not a scalar: {path:?}"
+        )));
     }
     let (start, end) = value_span(&toks, path).ok_or_else(|| Error::Txt2("no span".into()))?;
     let mut out = block.to_vec();
@@ -1271,16 +1374,22 @@ fn ensure_encoded(
             return replace_container(block, path, encoded);
         }
         if matches!(toks[index].kind, Kind::DictOpen | Kind::ArrayOpen) {
-            return Err(Error::Txt2(format!("path is a container, not a scalar: {path:?}")));
+            return Err(Error::Txt2(format!(
+                "path is a container, not a scalar: {path:?}"
+            )));
         }
         let (start, end) = value_span(&toks, path).ok_or_else(|| Error::Txt2("no span".into()))?;
         let mut out = block.to_vec();
         out.splice(start..end, encoded.iter().copied());
         return Ok(out);
     }
-    let (last, parent) = path.split_last().ok_or_else(|| Error::Txt2("empty path".into()))?;
+    let (last, parent) = path
+        .split_last()
+        .ok_or_else(|| Error::Txt2("empty path".into()))?;
     let Step::Key(key) = last else {
-        return Err(Error::Txt2(format!("cannot insert at array index: {path:?}")));
+        return Err(Error::Txt2(format!(
+            "cannot insert at array index: {path:?}"
+        )));
     };
     let dict = resolve(&toks, parent)
         .ok_or_else(|| Error::Txt2(format!("parent dict not found: {parent:?}")))?;
@@ -1361,13 +1470,19 @@ fn run_path<'a>(run: usize, tail: &[Step<'a>]) -> Vec<Step<'a>> {
 }
 
 fn run_count_in(toks: &[Token]) -> Result<usize, Error> {
-    let open = resolve(toks, &run_array()).ok_or_else(|| Error::Txt2("run table not found".into()))?;
+    let open =
+        resolve(toks, &run_array()).ok_or_else(|| Error::Txt2("run table not found".into()))?;
     if !matches!(toks[open].kind, Kind::ArrayOpen) {
         return Err(Error::Txt2("run table is not an array".into()));
     }
     let mut j = open + 1;
     let mut n = 0;
-    while !matches!(toks.get(j).ok_or_else(|| Error::Txt2("unterminated run table".into()))?.kind, Kind::ArrayClose) {
+    while !matches!(
+        toks.get(j)
+            .ok_or_else(|| Error::Txt2("unterminated run table".into()))?
+            .kind,
+        Kind::ArrayClose
+    ) {
         j = skip_value(toks, j).ok_or_else(|| Error::Txt2("bad run element".into()))?;
         n += 1;
     }
@@ -1404,7 +1519,11 @@ pub fn run_lengths(block: &[u8]) -> Result<Vec<i64>, Error> {
 pub fn set_run_lengths(block: &[u8], lengths: &[i64]) -> Result<Vec<u8>, Error> {
     let n = run_count(block)?;
     if lengths.len() != n {
-        return Err(Error::Txt2(format!("{} lengths for {} runs", lengths.len(), n)));
+        return Err(Error::Txt2(format!(
+            "{} lengths for {} runs",
+            lengths.len(),
+            n
+        )));
     }
     // The layer string's raw body is BOM + units (CR terminator included), so
     // its unit count is (len - 2) / 2. read_text stops at the first CR and would
@@ -1412,7 +1531,13 @@ pub fn set_run_lengths(block: &[u8], lengths: &[i64]) -> Result<Vec<u8>, Error> 
     let toks = tokens(block)?;
     let text = resolve(
         &toks,
-        &[Step::Key("1"), Step::Key("1"), Step::Index(0), Step::Key("0"), Step::Key("0")],
+        &[
+            Step::Key("1"),
+            Step::Key("1"),
+            Step::Index(0),
+            Step::Key("0"),
+            Step::Key("0"),
+        ],
     )
     .ok_or_else(|| Error::Txt2("layer text not found".into()))?;
     let units = match &toks[text].kind {
@@ -1435,7 +1560,9 @@ pub fn set_run_lengths(block: &[u8], lengths: &[i64]) -> Result<Vec<u8>, Error> 
     };
     let total: i64 = lengths.iter().sum();
     if total != units {
-        return Err(Error::Txt2(format!("run lengths sum to {total}, text needs {units}")));
+        return Err(Error::Txt2(format!(
+            "run lengths sum to {total}, text needs {units}"
+        )));
     }
     let mut out = block.to_vec();
     for (i, len) in lengths.iter().enumerate() {
@@ -1446,7 +1573,12 @@ pub fn set_run_lengths(block: &[u8], lengths: &[i64]) -> Result<Vec<u8>, Error> 
 
 /// Sets the font size of style run `run`.
 pub fn set_run_font_size(block: &[u8], run: usize, size: f32) -> Result<Vec<u8>, Error> {
-    set_run_property(block, run, RunProperty::FontSize, &Value::Real(f64::from(size)))
+    set_run_property(
+        block,
+        run,
+        RunProperty::FontSize,
+        &Value::Real(f64::from(size)),
+    )
 }
 
 /// Character properties Photoshop stores inside a `Txt2` style run, with the
@@ -1767,7 +1899,15 @@ pub fn set_run_property(
             property.key()
         )));
     }
-    let path = run_path(run, &[Step::Key("0"), Step::Key("0"), Step::Key("6"), Step::Key(property.key())]);
+    let path = run_path(
+        run,
+        &[
+            Step::Key("0"),
+            Step::Key("0"),
+            Step::Key("6"),
+            Step::Key(property.key()),
+        ],
+    );
     replace_value(block, &path, value)
 }
 
@@ -1779,7 +1919,15 @@ pub fn run_property(block: &[u8], run: usize, property: RunProperty) -> Option<V
     if property.is_paint() {
         return None;
     }
-    let path = run_path(run, &[Step::Key("0"), Step::Key("0"), Step::Key("6"), Step::Key(property.key())]);
+    let path = run_path(
+        run,
+        &[
+            Step::Key("0"),
+            Step::Key("0"),
+            Step::Key("6"),
+            Step::Key(property.key()),
+        ],
+    );
     scalar_at(block, &path)
 }
 
@@ -1795,11 +1943,21 @@ fn scalar_at(block: &[u8], path: &[Step<'_>]) -> Option<Value> {
     }
 }
 
-fn set_run_int(block: &[u8], run: usize, property: RunProperty, value: i64) -> Result<Vec<u8>, Error> {
+fn set_run_int(
+    block: &[u8],
+    run: usize,
+    property: RunProperty,
+    value: i64,
+) -> Result<Vec<u8>, Error> {
     set_run_ensured(block, run, property, &Value::Int(value))
 }
 
-fn set_run_bool(block: &[u8], run: usize, property: RunProperty, on: bool) -> Result<Vec<u8>, Error> {
+fn set_run_bool(
+    block: &[u8],
+    run: usize,
+    property: RunProperty,
+    on: bool,
+) -> Result<Vec<u8>, Error> {
     set_run_ensured(block, run, property, &Value::Bool(on))
 }
 
@@ -1810,7 +1968,15 @@ fn set_run_ensured(
     property: RunProperty,
     value: &Value,
 ) -> Result<Vec<u8>, Error> {
-    let path = run_path(run, &[Step::Key("0"), Step::Key("0"), Step::Key("6"), Step::Key(property.key())]);
+    let path = run_path(
+        run,
+        &[
+            Step::Key("0"),
+            Step::Key("0"),
+            Step::Key("6"),
+            Step::Key(property.key()),
+        ],
+    );
     ensure_value(block, &path, value)
 }
 
@@ -1854,8 +2020,11 @@ pub fn set_run_kerning_type(block: &[u8], run: usize, kind: KerningType) -> Resu
 /// Same, from a stored code. Rejects codes Photoshop does not define, so a
 /// bogus value can never be written.
 pub fn set_run_kerning_type_code(block: &[u8], run: usize, code: i64) -> Result<Vec<u8>, Error> {
-    let kind = KerningType::from_code(code)
-        .ok_or_else(|| Error::Txt2(format!("not a kerning type: {code} (0 manual, 1 metrics, 2 optical)")))?;
+    let kind = KerningType::from_code(code).ok_or_else(|| {
+        Error::Txt2(format!(
+            "not a kerning type: {code} (0 manual, 1 metrics, 2 optical)"
+        ))
+    })?;
     set_run_kerning_type(block, run, kind)
 }
 
@@ -1873,8 +2042,11 @@ pub fn set_run_capitalization(
 }
 
 pub fn set_run_capitalization_code(block: &[u8], run: usize, code: i64) -> Result<Vec<u8>, Error> {
-    let caps = Capitalization::from_code(code)
-        .ok_or_else(|| Error::Txt2(format!("not a capitalization: {code} (0 normal, 1 small, 2 all)")))?;
+    let caps = Capitalization::from_code(code).ok_or_else(|| {
+        Error::Txt2(format!(
+            "not a capitalization: {code} (0 normal, 1 small, 2 all)"
+        ))
+    })?;
     set_run_capitalization(block, run, caps)
 }
 
@@ -1888,8 +2060,11 @@ pub fn set_run_underline(block: &[u8], run: usize, kind: Underline) -> Result<Ve
 }
 
 pub fn set_run_underline_code(block: &[u8], run: usize, code: i64) -> Result<Vec<u8>, Error> {
-    let kind = Underline::from_code(code)
-        .ok_or_else(|| Error::Txt2(format!("not an underline kind: {code} (0 off, 1 right, 2 left)")))?;
+    let kind = Underline::from_code(code).ok_or_else(|| {
+        Error::Txt2(format!(
+            "not an underline kind: {code} (0 off, 1 right, 2 left)"
+        ))
+    })?;
     set_run_underline(block, run, kind)
 }
 
@@ -1907,8 +2082,11 @@ pub fn set_run_strikethrough(
 }
 
 pub fn set_run_strikethrough_code(block: &[u8], run: usize, code: i64) -> Result<Vec<u8>, Error> {
-    let kind = Strikethrough::from_code(code)
-        .ok_or_else(|| Error::Txt2(format!("not a strikethrough kind: {code} (0 off, 2 strike box)")))?;
+    let kind = Strikethrough::from_code(code).ok_or_else(|| {
+        Error::Txt2(format!(
+            "not a strikethrough kind: {code} (0 off, 2 strike box)"
+        ))
+    })?;
     set_run_strikethrough(block, run, kind)
 }
 
@@ -1987,10 +2165,16 @@ fn font_set_path() -> Vec<Step<'static>> {
 /// Number of fonts in the block's `FontSet`.
 pub fn font_count(block: &[u8]) -> Result<usize, Error> {
     let toks = tokens(block)?;
-    let open = resolve(&toks, &font_set_path()).ok_or_else(|| Error::Txt2("font set not found".into()))?;
+    let open =
+        resolve(&toks, &font_set_path()).ok_or_else(|| Error::Txt2("font set not found".into()))?;
     let mut j = open + 1;
     let mut n = 0;
-    while !matches!(toks.get(j).ok_or_else(|| Error::Txt2("unterminated font set".into()))?.kind, Kind::ArrayClose) {
+    while !matches!(
+        toks.get(j)
+            .ok_or_else(|| Error::Txt2("unterminated font set".into()))?
+            .kind,
+        Kind::ArrayClose
+    ) {
         j = skip_value(&toks, j).ok_or_else(|| Error::Txt2("bad font entry".into()))?;
         n += 1;
     }
@@ -2003,12 +2187,16 @@ pub fn font_count(block: &[u8]) -> Result<usize, Error> {
 pub fn ensure_font(block: &[u8], name: &str) -> Result<(Vec<u8>, usize), Error> {
     let encoded = utf16_name(name);
     let toks = tokens(block)?;
-    let open = resolve(&toks, &font_set_path()).ok_or_else(|| Error::Txt2("font set not found".into()))?;
+    let open =
+        resolve(&toks, &font_set_path()).ok_or_else(|| Error::Txt2("font set not found".into()))?;
     let mut j = open + 1;
     let mut index = 0;
     while !matches!(toks[j].kind, Kind::ArrayClose) {
         let next = skip_value(&toks, j).ok_or_else(|| Error::Txt2("bad font entry".into()))?;
-        if block[toks[j].start..toks[next - 1].end].windows(encoded.len()).any(|w| w == encoded.as_slice()) {
+        if block[toks[j].start..toks[next - 1].end]
+            .windows(encoded.len())
+            .any(|w| w == encoded.as_slice())
+        {
             return Ok((block.to_vec(), index));
         }
         j = next;
@@ -2027,7 +2215,15 @@ pub fn ensure_font(block: &[u8], name: &str) -> Result<(Vec<u8>, usize), Error> 
 
 /// Points style run `run` at `FontSet` index `index` (`/0` of its style sheet).
 pub fn set_run_font_index(block: &[u8], run: usize, index: usize) -> Result<Vec<u8>, Error> {
-    let path = run_path(run, &[Step::Key("0"), Step::Key("0"), Step::Key("6"), Step::Key("0")]);
+    let path = run_path(
+        run,
+        &[
+            Step::Key("0"),
+            Step::Key("0"),
+            Step::Key("6"),
+            Step::Key("0"),
+        ],
+    );
     replace_value(block, &path, &Value::Int(index as i64))
 }
 
@@ -2057,7 +2253,12 @@ pub fn run_stroke_color(block: &[u8], run: usize) -> Option<[f32; 4]> {
 fn paint_path(run: usize, property: RunProperty) -> Vec<Step<'static>> {
     run_path(
         run,
-        &[Step::Key("0"), Step::Key("0"), Step::Key("6"), Step::Key(property.key())],
+        &[
+            Step::Key("0"),
+            Step::Key("0"),
+            Step::Key("6"),
+            Step::Key(property.key()),
+        ],
     )
 }
 
@@ -2082,7 +2283,10 @@ fn run_paint(block: &[u8], run: usize, property: RunProperty) -> Option<[f32; 4]
     let text = std::str::from_utf8(&block[s..e]).ok()?;
     let at = text.find("/1 [")? + 4;
     let body = text[at..].split(']').next()?;
-    let nums: Vec<f32> = body.split_whitespace().filter_map(|t| t.parse().ok()).collect();
+    let nums: Vec<f32> = body
+        .split_whitespace()
+        .filter_map(|t| t.parse().ok())
+        .collect();
     match nums.as_slice() {
         [a, r, g, b] => Some([*a, *r, *g, *b]),
         _ => None,
@@ -2129,7 +2333,8 @@ pub fn duplicate_run(block: &[u8], from: usize) -> Result<Vec<u8>, Error> {
         .ok_or_else(|| Error::Txt2("no run has a spare unit to split off".into()))?;
     let (rs, re) = value_span(&toks, &run_path(from, &[]))
         .ok_or_else(|| Error::Txt2("source run not found".into()))?;
-    let open = resolve(&toks, &run_array()).ok_or_else(|| Error::Txt2("run table not found".into()))?;
+    let open =
+        resolve(&toks, &run_array()).ok_or_else(|| Error::Txt2("run table not found".into()))?;
     let mut j = open + 1;
     while !matches!(toks[j].kind, Kind::ArrayClose) {
         j = skip_value(&toks, j).ok_or_else(|| Error::Txt2("bad run element".into()))?;
@@ -2175,7 +2380,8 @@ pub fn clear_cache(block: &[u8], object: usize) -> Result<Vec<u8>, Error> {
 /// Replaces the value at `path` with arbitrary bytes (`[ ]` for an empty array).
 pub fn replace_container(block: &[u8], path: &[Step<'_>], value: &[u8]) -> Result<Vec<u8>, Error> {
     let toks = tokens(block)?;
-    let (start, end) = value_span(&toks, path).ok_or_else(|| Error::Txt2(format!("path not found: {path:?}")))?;
+    let (start, end) =
+        value_span(&toks, path).ok_or_else(|| Error::Txt2(format!("path not found: {path:?}")))?;
     let mut out = block.to_vec();
     out.splice(start..end, value.iter().copied());
     Ok(out)
@@ -2195,7 +2401,11 @@ pub struct FrameGeometry {
 fn frame_array(toks: &[Token]) -> Option<usize> {
     let entries = frame_entries(toks)?;
     let arr = entries.iter().find(|(k, _)| k.as_str() == "1")?.1;
-    if matches!(toks[arr].kind, Kind::ArrayOpen) { Some(arr) } else { None }
+    if matches!(toks[arr].kind, Kind::ArrayOpen) {
+        Some(arr)
+    } else {
+        None
+    }
 }
 
 /// Entries of the `/99 /F` dict (the area-text frame), if the block has one.
@@ -2204,7 +2414,9 @@ fn frame_entries(toks: &[Token]) -> Option<Vec<(String, usize)>> {
         if !matches!(t.kind, Kind::DictOpen) {
             continue;
         }
-        let Some(entries) = dict_entries(toks, i) else { continue };
+        let Some(entries) = dict_entries(toks, i) else {
+            continue;
+        };
         let is_frame = entries.iter().any(|(k, v)| {
             k.as_str() == "99" && matches!(&toks[*v].kind, Kind::Name(n) if n.as_str() == "F")
         });
@@ -2251,7 +2463,12 @@ pub fn frame_geometry(block: &[u8]) -> Option<FrameGeometry> {
     for (slot, &i) in v.iter_mut().zip(pos.iter()) {
         *slot = number(&toks[i].kind)? as f32;
     }
-    Some(FrameGeometry { left: v[0], top: v[1], right: v[2], bottom: v[3] })
+    Some(FrameGeometry {
+        left: v[0],
+        top: v[1],
+        right: v[2],
+        bottom: v[3],
+    })
 }
 
 /// Writes the frame rectangle in place, keeping the stored order and every
@@ -2259,17 +2476,228 @@ pub fn frame_geometry(block: &[u8]) -> Option<FrameGeometry> {
 pub fn set_frame_geometry(block: &[u8], g: FrameGeometry) -> Result<Vec<u8>, Error> {
     let toks = tokens(block)?;
     let arr = frame_array(&toks).ok_or_else(|| Error::Txt2("frame geometry not found".into()))?;
-    let pos = frame_values(&toks, arr).ok_or_else(|| Error::Txt2("frame array malformed".into()))?;
+    let pos =
+        frame_values(&toks, arr).ok_or_else(|| Error::Txt2("frame array malformed".into()))?;
     let vals = [g.left, g.top, g.right, g.bottom];
     let mut out = block.to_vec();
     // Reverse order keeps the original byte offsets of earlier elements valid.
     for (idx, &p) in pos.iter().enumerate().rev() {
         let t = &toks[p];
-        out.splice(t.start..t.end, format_real(f64::from(vals[idx])).into_bytes());
+        out.splice(
+            t.start..t.end,
+            format_real(f64::from(vals[idx])).into_bytes(),
+        );
     }
     Ok(out)
 }
 
 // ---------------------------------------------------------------------------
+// Composed-layout cache invalidation
+// ---------------------------------------------------------------------------
+
+/// One byte span of a block and the bytes that replace it.
+struct CacheEdit {
+    start: usize,
+    end: usize,
+    bytes: Vec<u8>,
+}
+
+/// Whether the dict opened at `open` is an area-text frame (`/99 /F`) carrying
+/// a `/1` rectangle.
+fn is_frame_dict(toks: &[Token], open: usize) -> bool {
+    let Some(entries) = dict_entries(toks, open) else {
+        return false;
+    };
+    let name = entries
+        .iter()
+        .find(|(k, _)| k == "99")
+        .is_some_and(|(_, v)| matches!(&toks[*v].kind, Kind::Name(n) if n == "F"));
+    name && entries
+        .iter()
+        .any(|(k, v)| k == "1" && matches!(toks[*v].kind, Kind::ArrayOpen))
+}
+
+/// Token index of the `/1` rectangle of the area frame inside the subtree
+/// opened at `open` (the object's composed layout), if it holds one. Point-text
+/// caches have no frame rectangle.
+fn frame_in_subtree(toks: &[Token], open: usize) -> Option<usize> {
+    let end = skip_value(toks, open)?;
+    let dict = (open + 1..end)
+        .find(|&i| matches!(toks[i].kind, Kind::DictOpen) && is_frame_dict(toks, i))?;
+    let entries = dict_entries(toks, dict)?;
+    let arr = entries.iter().find(|(k, _)| k == "1")?.1;
+    matches!(toks[arr].kind, Kind::ArrayOpen).then_some(arr)
+}
+
+/// The path from a block's top level to text object `object`'s composed
+/// layout: `/1` (text engine) → `/1` (objects) → `[object]` → `/1` (cache).
+fn cache_path(object: usize) -> [Step<'static>; 4] {
+    [
+        Step::Key("1"),
+        Step::Key("1"),
+        Step::Index(object),
+        Step::Key("1"),
+    ]
+}
+
+/// Number of text objects in `/1 /1` of a block.
+fn object_count(toks: &[Token]) -> Option<usize> {
+    let arr = resolve(toks, &[Step::Key("1"), Step::Key("1")])?;
+    if !matches!(toks[arr].kind, Kind::ArrayOpen) {
+        return None;
+    }
+    let end = skip_value(toks, arr)?;
+    let mut count = 0;
+    let mut i = arr + 1;
+    while i < end && !matches!(toks[i].kind, Kind::ArrayClose) {
+        i = skip_value(toks, i)?;
+        count += 1;
+    }
+    Some(count)
+}
+
+/// The edit that makes Photoshop recompose object `object`'s layout from the
+/// editing model, or `None` when the object has no composed layout to touch.
+///
+/// * Area text: the cached frame rectangle's top edge moves one point. The
+///   model's frame (the `TySh` shape) wins on the next open and Photoshop
+///   rewrites the cache with the new line boxes.
+/// * Point text: the composed layout (`/2`) becomes `[ ]`, the "not laid out"
+///   state Photoshop recomposes from.
+fn cache_edit(toks: &[Token], object: usize) -> Option<CacheEdit> {
+    let cache = resolve(toks, &cache_path(object))?;
+    if !matches!(toks[cache].kind, Kind::DictOpen) {
+        return None;
+    }
+    if let Some(arr) = frame_in_subtree(toks, cache) {
+        let pos = frame_values(toks, arr)?;
+        let top = number(&toks[pos[1]].kind)?;
+        return Some(CacheEdit {
+            start: toks[pos[1]].start,
+            end: toks[pos[1]].end,
+            bytes: format_real(top + 1.0).into_bytes(),
+        });
+    }
+    let path = [
+        Step::Key("1"),
+        Step::Key("1"),
+        Step::Index(object),
+        Step::Key("1"),
+        Step::Key("2"),
+    ];
+    let (start, end) = value_span(toks, &path)?;
+    Some(CacheEdit {
+        start,
+        end,
+        bytes: b"[ ]".to_vec(),
+    })
+}
+
+/// Edits of [`invalidate_composed_layouts`], applied back to front so the byte
+/// offsets of the spans still to replace stay valid.
+fn apply_edits(block: &[u8], mut edits: Vec<CacheEdit>) -> Vec<u8> {
+    if edits.is_empty() {
+        return block.to_vec();
+    }
+    edits.sort_by_key(|e| e.start);
+    let mut out = block.to_vec();
+    for e in edits.into_iter().rev() {
+        out.splice(e.start..e.end, e.bytes);
+    }
+    out
+}
+
+/// Makes Photoshop recompose object `object`'s text layout from its editing
+/// model on the next open.
+///
+/// Photoshop draws the composed layout cached in `Txt2` (`/1/1[i]/1`) rather
+/// than the model, so a save that changed the text or its properties without
+/// rewriting the cache shows the old layout, and the first text edit asks
+/// whether to accept the new one. Touching the cache the way Photoshop's own
+/// relayout check notices makes it recompose while opening instead:
+///
+/// * area text (`/99 /F` rectangle in the cache): move the cached frame's top
+///   edge one point — the model's frame wins and the cache is rewritten with the
+///   model's line boxes. Measured on Photoshop 20.0.2 (`out/verify/
+///   existing_depth_framebump.psd` opened and saved again gave exactly the cache
+///   of the same layer recomposed from its model, frame included);
+/// * point text: empty the composed layout (`/2`), the "not laid out" state
+///   Photoshop recomposes from (`docs/layout-update.md`).
+///
+/// `Ok(block)` unchanged when `object` has no composed layout (a native block
+/// or an object past the array).
+pub fn invalidate_composed_layout(block: &[u8], object: usize) -> Result<Vec<u8>, Error> {
+    let toks = tokens(block)?;
+    let edits = cache_edit(&toks, object).into_iter().collect();
+    Ok(apply_edits(block, edits))
+}
+
+/// [`invalidate_composed_layout`] for every text object of a document block,
+/// so Photoshop recomposes each layer it draws from a cache that may no longer
+/// match the model (the block a save writes after text, style or paragraph
+/// edits, including the ones `EngineData` cannot describe).
+pub fn invalidate_composed_layouts(block: &[u8]) -> Result<Vec<u8>, Error> {
+    let toks = tokens(block)?;
+    let count = object_count(&toks).unwrap_or(0);
+    let edits = (0..count).filter_map(|i| cache_edit(&toks, i)).collect();
+    Ok(apply_edits(block, edits))
+}
+
+/// Types of the tokens of the complete value at `path` (container included), for comparing
+/// two blocks' models without depending on their whitespace or number formatting.
+fn value_kinds(toks: &[Token], path: &[Step<'_>]) -> Option<Vec<Kind>> {
+    let v = resolve(toks, path)?;
+    let end = skip_value(toks, v)?;
+    Some(toks[v..end].iter().map(|t| t.kind.clone()).collect())
+}
+
+/// [`invalidate_composed_layouts`], skipped when no pre-existing text object's
+/// editing model (the `/0` text, style runs and paragraph runs) differs from
+/// `previous`'s object at the same slot.
+///
+/// A writer cannot tell which layers were edited, but the block it replaces
+/// can: if every object both blocks hold has the same model, the file is being
+/// saved unchanged and its caches, glyph pen positions (`/21 /1`) and other
+/// extras are returned byte for byte.  As soon as one object's model changed,
+/// every object's cache is invalidated: an old file may carry a stale cache
+/// for a layer this save did not touch (an earlier save rewrote its model and
+/// kept the cache), and nothing marks those apart, so refreshing all of them is
+/// what Photoshop's "Update All Text Layers" does.  Objects `previous` does not
+/// hold (new layers) have no older cache and do not count as a change.
+pub fn invalidate_changed_composed_layouts(
+    current: &[u8],
+    previous: &[u8],
+) -> Result<Vec<u8>, Error> {
+    let toks = tokens(current)?;
+    let count = object_count(&toks).unwrap_or(0);
+    let Ok(prev) = tokens(previous) else {
+        return invalidate_composed_layouts(current);
+    };
+    let path = |i: usize| {
+        [
+            Step::Key("1"),
+            Step::Key("1"),
+            Step::Index(i),
+            Step::Key("0"),
+        ]
+    };
+    let changed = (0..count).any(|i| {
+        let p = path(i);
+        match (value_kinds(&prev, &p), value_kinds(&toks, &p)) {
+            // In both blocks: compare the models.
+            (Some(before), Some(now)) => before != now,
+            // New in this save: no older cache to invalidate.
+            (None, _) => false,
+            // The replaced block held an object this one lost.
+            (Some(_), None) => true,
+        }
+    });
+    if changed {
+        invalidate_composed_layouts(current)
+    } else {
+        Ok(current.to_vec())
+    }
+}
+
 // Run-table rebuild
 // ---------------------------------------------------------------------------

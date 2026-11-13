@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use photocraft_text::area::{layout_area_runs, ParagraphStyle};
+use photocraft_text::area::{ParagraphStyle, layout_area_runs};
 use photocraft_text::font::Face;
 use photocraft_text::layout::TextStyle;
 use photocraft_text::runs::{FontSet, RunStyle};
@@ -43,9 +43,13 @@ struct Glyph {
 
 fn font_bytes() -> Vec<u8> {
     let home = std::env::var("HOME").expect("HOME");
-    let path: PathBuf = [&home, ".local/share/photocraft/wine/drive_c/windows/Fonts", "NotoSans-Regular.ttf"]
-        .iter()
-        .collect();
+    let path: PathBuf = [
+        &home,
+        ".local/share/photocraft/wine/drive_c/windows/Fonts",
+        "NotoSans-Regular.ttf",
+    ]
+    .iter()
+    .collect();
     std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
@@ -84,7 +88,10 @@ fn multi_run_layout_matches_photoshop() {
             &faces,
             &fx.text,
             &runs,
-            &TextStyle { size: 48.0, ..Default::default() },
+            &TextStyle {
+                size: 48.0,
+                ..Default::default()
+            },
             &ParagraphStyle::default(),
             10_000.0,
             1000.0,
@@ -97,12 +104,25 @@ fn multi_run_layout_matches_photoshop() {
         let y0 = line.glyphs[0].y;
         for (i, (g, want)) in line.glyphs.iter().zip(&fx.glyphs).enumerate() {
             assert_eq!(g.ch.to_string(), want.ch, "{name}[{i}]: char");
-            assert!((g.x - want.x).abs() < 0.01, "{name}[{i}] x {} != {}", g.x, want.x);
+            assert!(
+                (g.x - want.x).abs() < 0.01,
+                "{name}[{i}] x {} != {}",
+                g.x,
+                want.x
+            );
             if let Some(want_adv) = want.advance {
-                assert!((g.advance - want_adv).abs() < 0.01, "{name}[{i}] advance {} != {want_adv}", g.advance);
+                assert!(
+                    (g.advance - want_adv).abs() < 0.01,
+                    "{name}[{i}] advance {} != {want_adv}",
+                    g.advance
+                );
             }
             let dy = g.y - y0;
-            assert!((dy - want.dy).abs() < 0.01, "{name}[{i}] dy {dy} != {}", want.dy);
+            assert!(
+                (dy - want.dy).abs() < 0.01,
+                "{name}[{i}] dy {dy} != {}",
+                want.dy
+            );
         }
         checked += 1;
     }

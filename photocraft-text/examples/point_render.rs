@@ -5,7 +5,7 @@
 use photocraft_psd::builder::{LayerSpec, PixelData, PsdBuilder};
 use photocraft_psd::{ColorMode, Compression};
 use photocraft_text::font::Face;
-use photocraft_text::layout::{layout_point, Kerning, TextStyle};
+use photocraft_text::layout::{Kerning, TextStyle, layout_point};
 use photocraft_text::outline::glyph_contours;
 use photocraft_text::raster::Canvas;
 
@@ -26,7 +26,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         Kerning::Metrics
     };
-    let style = TextStyle { size, kerning, ..Default::default() };
+    let style = TextStyle {
+        size,
+        kerning,
+        ..Default::default()
+    };
     let lines = layout_point(&face, &text, &style, (0.0, 0.0));
 
     let (w, h) = (1200u32, 400u32);
@@ -58,7 +62,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .depth(8)
         .compression(Compression::Rle)
         .resolution(72.0);
-    builder.push_layer(LayerSpec::new("rust_render", lx, ly, ow, oh, PixelData::Rgba8(rgba)));
+    builder.push_layer(LayerSpec::new(
+        "rust_render",
+        lx,
+        ly,
+        ow,
+        oh,
+        PixelData::Rgba8(rgba),
+    ));
     builder.composite(PixelData::Rgba8(canvas.pixels));
     std::fs::write(&a[2], builder.to_bytes()?)?;
     println!("wrote {} ({}x{} at {}, {})", &a[2], ow, oh, lx, ly);

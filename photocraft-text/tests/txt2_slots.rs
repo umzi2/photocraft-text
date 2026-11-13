@@ -9,8 +9,8 @@
 
 use photocraft_psd::PsdFile;
 use photocraft_text::txt2::{
-    self, Capitalization, Hyphenation, Justification, KerningType, Language, ParagraphProperty,
-    RunProperty, Step, Strikethrough, Underline, Value, OLD_STYLE_ON,
+    self, Capitalization, Hyphenation, Justification, KerningType, Language, OLD_STYLE_ON,
+    ParagraphProperty, RunProperty, Step, Strikethrough, Underline, Value,
 };
 
 fn corpus_bytes(name: &str) -> Vec<u8> {
@@ -80,9 +80,15 @@ fn character_flags_round_trip() {
     assert_eq!(txt2::run_faux_bold(&out, 0), Some(true));
     assert_eq!(txt2::run_faux_italic(&out, 0), Some(true));
     assert_eq!(txt2::run_kerning_type(&out, 0), Some(KerningType::Optical));
-    assert_eq!(txt2::run_capitalization(&out, 0), Some(Capitalization::AllCaps));
+    assert_eq!(
+        txt2::run_capitalization(&out, 0),
+        Some(Capitalization::AllCaps)
+    );
     assert_eq!(txt2::run_underline(&out, 0), Some(Underline::Left));
-    assert_eq!(txt2::run_strikethrough(&out, 0), Some(Strikethrough::StrikeBox));
+    assert_eq!(
+        txt2::run_strikethrough(&out, 0),
+        Some(Strikethrough::StrikeBox)
+    );
     assert_eq!(txt2::run_ligatures(&out, 0), Some(false));
     assert_eq!(txt2::run_alternate_ligatures(&out, 0), Some(true));
     assert_eq!(txt2::run_old_style(&out, 0), Some(OLD_STYLE_ON));
@@ -105,7 +111,10 @@ fn character_flags_round_trip() {
     // Run 1 keeps its own values.
     assert_eq!(txt2::run_faux_bold(&out, 1), Some(false));
     assert_eq!(txt2::run_kerning_type(&out, 1), Some(KerningType::Metrics));
-    assert_eq!(txt2::run_capitalization(&out, 1), Some(Capitalization::Normal));
+    assert_eq!(
+        txt2::run_capitalization(&out, 1),
+        Some(Capitalization::Normal)
+    );
     assert_eq!(txt2::run_underline(&out, 1), Some(Underline::Off));
     assert_eq!(txt2::run_strikethrough(&out, 1), Some(Strikethrough::Off));
     assert_eq!(txt2::run_ligatures(&out, 1), Some(true));
@@ -127,7 +136,11 @@ fn character_slots_are_the_measured_keys() {
     let out = txt2::set_run_capitalization(&block, 0, Capitalization::SmallCaps).unwrap();
     // `/6/12` is the key Photoshop re-saved for all caps; small caps is 1.
     assert_eq!(raw_at(&out, &run_sheet_path(0, "12")), "1");
-    assert_eq!(raw_at(&out, &run_sheet_path(0, "11")), "1", "metrics is the default");
+    assert_eq!(
+        raw_at(&out, &run_sheet_path(0, "11")),
+        "1",
+        "metrics is the default"
+    );
     let out = txt2::set_run_kerning_type(&out, 0, KerningType::Manual).unwrap();
     assert_eq!(raw_at(&out, &run_sheet_path(0, "11")), "0");
     let out = txt2::set_run_underline(&out, 0, Underline::Right).unwrap();
@@ -172,14 +185,18 @@ fn paragraph_properties_round_trip() {
         out = txt2::set_paragraph_hyphenation(&out, i, hyphenation).unwrap();
         out = txt2::set_paragraph_range(&out, i, ParagraphProperty::WordSpacing, [0.9, 1.0, 1.2])
             .unwrap();
-        out = txt2::set_paragraph_range(&out, i, ParagraphProperty::LetterSpacing, [-2.0, 1.0, 4.0])
-            .unwrap();
+        out =
+            txt2::set_paragraph_range(&out, i, ParagraphProperty::LetterSpacing, [-2.0, 1.0, 4.0])
+                .unwrap();
         out = txt2::set_paragraph_range(&out, i, ParagraphProperty::GlyphScaling, [0.9, 1.0, 1.1])
             .unwrap();
     }
 
     for i in 0..count {
-        assert_eq!(txt2::paragraph_justification(&out, i), Some(Justification::JustifyLastLeft));
+        assert_eq!(
+            txt2::paragraph_justification(&out, i),
+            Some(Justification::JustifyLastLeft)
+        );
         assert_eq!(txt2::paragraph_first_line_indent(&out, i), Some(24.0));
         assert_eq!(txt2::paragraph_start_indent(&out, i), Some(18.0));
         assert_eq!(txt2::paragraph_end_indent(&out, i), Some(6.5));
@@ -239,7 +256,10 @@ fn paragraph_properties_round_trip() {
         assert_eq!(raw_at(&out, &paragraph_sheet_path(i, "21")), "true");
         assert_eq!(raw_at(&out, &paragraph_sheet_path(i, "29")), "true");
     }
-    assert_eq!(txt2::paragraph_run_lengths(&out).unwrap(), txt2::paragraph_run_lengths(&block).unwrap());
+    assert_eq!(
+        txt2::paragraph_run_lengths(&out).unwrap(),
+        txt2::paragraph_run_lengths(&block).unwrap()
+    );
     assert_eq!(txt2::untokenize(&out, &txt2::tokens(&out).unwrap()), out);
 }
 
@@ -248,7 +268,11 @@ fn author_write_reread_psd() {
     // Author every property into a real PSD, write it, parse it back and read
     // the same values out of the file on disk.
     let mut file = PsdFile::from_bytes(&corpus_bytes("plain_latin")).expect("psd");
-    let block = file.global_blocks.iter_mut().find(|b| &b.key == b"Txt2").expect("Txt2");
+    let block = file
+        .global_blocks
+        .iter_mut()
+        .find(|b| &b.key == b"Txt2")
+        .expect("Txt2");
     let mut data = txt2::set_run_layout(&block.data, &[10, 20]).unwrap();
     data = txt2::set_run_faux_bold(&data, 0, true).unwrap();
     data = txt2::set_run_capitalization(&data, 0, Capitalization::AllCaps).unwrap();
@@ -267,7 +291,11 @@ fn author_write_reread_psd() {
         data = txt2::set_paragraph_hyphenation(
             &data,
             i,
-            Hyphenation { hyphenate: true, zone_pt: 12.0, ..Hyphenation::default() },
+            Hyphenation {
+                hyphenate: true,
+                zone_pt: 12.0,
+                ..Hyphenation::default()
+            },
         )
         .unwrap();
     }
@@ -276,7 +304,8 @@ fn author_write_reread_psd() {
     let written = file.to_bytes().expect("serialise psd");
 
     // Disk round-trip, exactly as the Lead's Photoshop run will do it.
-    let path = std::env::temp_dir().join(format!("photocraft_txt2_slots_{}.psd", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("photocraft_txt2_slots_{}.psd", std::process::id()));
     std::fs::write(&path, &written).expect("write psd");
     let read_back = std::fs::read(&path).expect("read psd");
     let _ = std::fs::remove_file(&path);
@@ -289,23 +318,41 @@ fn author_write_reread_psd() {
         .data
         .clone();
 
-    assert_eq!(txt2::read_text(&block).as_deref(), Some("Hamburgefonstiv AVATAR To Ty."));
+    assert_eq!(
+        txt2::read_text(&block).as_deref(),
+        Some("Hamburgefonstiv AVATAR To Ty.")
+    );
     assert_eq!(txt2::run_lengths(&block).unwrap(), vec![10, 20]);
     assert_eq!(txt2::run_faux_bold(&block, 0), Some(true));
-    assert_eq!(txt2::run_capitalization(&block, 0), Some(Capitalization::AllCaps));
+    assert_eq!(
+        txt2::run_capitalization(&block, 0),
+        Some(Capitalization::AllCaps)
+    );
     assert_eq!(txt2::run_underline(&block, 0), Some(Underline::Left));
-    assert_eq!(txt2::run_strikethrough(&block, 0), Some(Strikethrough::StrikeBox));
-    assert_eq!(txt2::run_kerning_type(&block, 0), Some(KerningType::Optical));
+    assert_eq!(
+        txt2::run_strikethrough(&block, 0),
+        Some(Strikethrough::StrikeBox)
+    );
+    assert_eq!(
+        txt2::run_kerning_type(&block, 0),
+        Some(KerningType::Optical)
+    );
     assert_eq!(txt2::run_language(&block, 0), Some(Language::EnglishUk));
     assert_eq!(txt2::run_old_style(&block, 0), Some(OLD_STYLE_ON));
     assert_eq!(txt2::run_ligatures(&block, 0), Some(false));
     assert_eq!(txt2::run_alternate_ligatures(&block, 0), Some(true));
     assert_eq!(txt2::run_no_break(&block, 0), Some(true));
     for i in 0..txt2::paragraph_count(&block).unwrap() {
-        assert_eq!(txt2::paragraph_justification(&block, i), Some(Justification::Center));
+        assert_eq!(
+            txt2::paragraph_justification(&block, i),
+            Some(Justification::Center)
+        );
         assert_eq!(txt2::paragraph_auto_leading(&block, i), Some(1.5));
         assert_eq!(txt2::paragraph_hanging_punctuation(&block, i), Some(true));
-        assert_eq!(txt2::paragraph_hyphenation(&block, i).unwrap().zone_pt, 12.0);
+        assert_eq!(
+            txt2::paragraph_hyphenation(&block, i).unwrap().zone_pt,
+            12.0
+        );
     }
 }
 
@@ -333,7 +380,14 @@ fn unknown_values_are_rejected() {
         Box::new(|b| txt2::set_paragraph_auto_leading(b, 0, 0.0)),
         Box::new(|b| txt2::set_paragraph_auto_leading(b, 0, f32::NAN)),
         Box::new(|b| {
-            txt2::set_paragraph_hyphenation(b, 0, Hyphenation { limit: -1, ..Hyphenation::default() })
+            txt2::set_paragraph_hyphenation(
+                b,
+                0,
+                Hyphenation {
+                    limit: -1,
+                    ..Hyphenation::default()
+                },
+            )
         }),
     ];
     for attempt in attempts {
@@ -344,9 +398,19 @@ fn unknown_values_are_rejected() {
     // is the manual-kerning amount, whose fixed-point encoding is still
     // unmeasured, so it deliberately has no property.
     assert_eq!(RunProperty::from_key("10"), None);
-    assert_eq!(ParagraphProperty::from_key("6"), None, "unmeasured space keys stay unknown");
-    assert_eq!(RunProperty::from_key("12"), Some(RunProperty::Capitalization));
-    assert_eq!(ParagraphProperty::from_key("21"), Some(ParagraphProperty::HangingPunctuation));
+    assert_eq!(
+        ParagraphProperty::from_key("6"),
+        None,
+        "unmeasured space keys stay unknown"
+    );
+    assert_eq!(
+        RunProperty::from_key("12"),
+        Some(RunProperty::Capitalization)
+    );
+    assert_eq!(
+        ParagraphProperty::from_key("21"),
+        Some(ParagraphProperty::HangingPunctuation)
+    );
 }
 
 fn antialias_dict_path(key: &'static str) -> Vec<Step<'static>> {
@@ -363,7 +427,10 @@ fn hyphenation_detail_keys_follow_the_flag() {
     let off = txt2::set_paragraph_hyphenation(
         &block,
         0,
-        Hyphenation { hyphenate: false, ..Hyphenation::default() },
+        Hyphenation {
+            hyphenate: false,
+            ..Hyphenation::default()
+        },
     )
     .unwrap();
     assert_eq!(raw_at(&off, &paragraph_sheet_path(0, "9")), "false");
@@ -374,7 +441,10 @@ fn hyphenation_detail_keys_follow_the_flag() {
     );
     let read = txt2::paragraph_hyphenation(&off, 0).unwrap();
     assert!(!read.hyphenate);
-    assert_eq!(read.words_longer_than, Hyphenation::default().words_longer_than);
+    assert_eq!(
+        read.words_longer_than,
+        Hyphenation::default().words_longer_than
+    );
     assert_eq!(read.zone_pt, Hyphenation::default().zone_pt);
 
     // On: turning the flag on materialises `/10` … `/15`, as Photoshop does
@@ -382,7 +452,11 @@ fn hyphenation_detail_keys_follow_the_flag() {
     let on = txt2::set_paragraph_hyphenation(
         &off,
         0,
-        Hyphenation { hyphenate: true, words_longer_than: 7, ..Hyphenation::default() },
+        Hyphenation {
+            hyphenate: true,
+            words_longer_than: 7,
+            ..Hyphenation::default()
+        },
     )
     .unwrap();
     assert_eq!(raw_at(&on, &paragraph_sheet_path(0, "9")), "true");
@@ -390,13 +464,22 @@ fn hyphenation_detail_keys_follow_the_flag() {
     assert_eq!(raw_at(&on, &paragraph_sheet_path(0, "13")), "0");
     assert_eq!(raw_at(&on, &paragraph_sheet_path(0, "14")), "36.0");
     assert_eq!(raw_at(&on, &paragraph_sheet_path(0, "15")), "true");
-    assert_eq!(txt2::paragraph_hyphenation(&on, 0).unwrap().words_longer_than, 7);
+    assert_eq!(
+        txt2::paragraph_hyphenation(&on, 0)
+            .unwrap()
+            .words_longer_than,
+        7
+    );
 }
 
 #[test]
 fn antialias_smooth_omits_the_dictionary() {
     let block = corpus_block("plain_latin");
-    assert_eq!(raw_at(&block, &txt2::antialias_path()), "4", "corpus is sharp");
+    assert_eq!(
+        raw_at(&block, &txt2::antialias_path()),
+        "4",
+        "corpus is sharp"
+    );
     assert_eq!(raw_at(&block, &antialias_dict_path("2")), "true");
 
     // Every reachable non-smooth code writes `/10/0` and keeps the `/2` flag.
@@ -423,16 +506,24 @@ fn antialias_smooth_omits_the_dictionary() {
 
 #[test]
 fn language_id_spaces_translate() {
-    use photocraft_text::runs::{engine_language, to_engine_data, txt2_language, RunStyle};
+    use photocraft_text::runs::{RunStyle, engine_language, to_engine_data, txt2_language};
     assert_eq!(engine_language(0), Some(0));
     assert_eq!(engine_language(14), Some(14));
-    assert_eq!(engine_language(42), Some(4), "German is 42 in Txt2 but 4 in EngineData");
+    assert_eq!(
+        engine_language(42),
+        Some(4),
+        "German is 42 in Txt2 but 4 in EngineData"
+    );
     assert_eq!(txt2_language(4), Some(42));
     assert_eq!(txt2_language(14), Some(14));
     assert_eq!(engine_language(7), None, "unmeasured ids are not invented");
 
     // The EngineData mirror writes the translated id.
-    let value = to_engine_data(&[RunStyle { len: 1, language: Some(42), ..RunStyle::default() }]);
+    let value = to_engine_data(&[RunStyle {
+        len: 1,
+        language: Some(42),
+        ..RunStyle::default()
+    }]);
     let sheet = value
         .get("RunArray")
         .and_then(|r| r.as_array())

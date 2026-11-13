@@ -15,9 +15,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .clone();
     if a.get(2).map(String::as_str) == Some("run0") {
         let mut path = txt2::run_path_for(0);
-        path.extend([Step::Key("0"), Step::Key("0"), Step::Key("6"), Step::Key("5")]);
+        path.extend([
+            Step::Key("0"),
+            Step::Key("0"),
+            Step::Key("6"),
+            Step::Key("5"),
+        ]);
         println!("path {path:?}");
-        println!("{:?}", txt2::read_path(&block, &path)?.map(|v| String::from_utf8_lossy(&v).to_string()));
+        println!(
+            "{:?}",
+            txt2::read_path(&block, &path)?.map(|v| String::from_utf8_lossy(&v).to_string())
+        );
         let path2 = vec![
             Step::Key("1"),
             Step::Key("1"),
@@ -31,8 +39,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Step::Key("5"),
             Step::Key("0"),
         ];
-        println!("para {:?}", txt2::read_path(&block, &path2)?.map(|v| String::from_utf8_lossy(&v).to_string()));
-        let spec = ["k1", "k1", "k0", "k0", "k5", "k0", "0", "k0", "k0", "k5", "k0"];
+        println!(
+            "para {:?}",
+            txt2::read_path(&block, &path2)?.map(|v| String::from_utf8_lossy(&v).to_string())
+        );
+        let spec = [
+            "k1", "k1", "k0", "k0", "k5", "k0", "0", "k0", "k0", "k5", "k0",
+        ];
         let path3: Vec<Step> = spec
             .iter()
             .map(|s| match s.strip_prefix('k') {
@@ -41,7 +54,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .collect();
         println!("path3 {path3:?}");
-        println!("para3 {:?}", txt2::read_path(&block, &path3)?.map(|v| String::from_utf8_lossy(&v).to_string()));
+        println!(
+            "para3 {:?}",
+            txt2::read_path(&block, &path3)?.map(|v| String::from_utf8_lossy(&v).to_string())
+        );
         let path4: Vec<Step> = vec![
             Step::Key("1"),
             Step::Key("1"),

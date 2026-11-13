@@ -9,7 +9,7 @@
 //! its paragraph and fits costs 0. A line that ends inside a word adds
 //! `FLAG_COST`, the cost of a ratio-1 line.
 
-use crate::typography::{is_left_hang, is_right_hang, left_hang_fit, right_hang_fit, kinsoku};
+use crate::typography::{is_left_hang, is_right_hang, kinsoku, left_hang_fit, right_hang_fit};
 
 /// Cost of a line at ratio 1 (`B = 100`).
 const FLAG_COST: f64 = 1e6;
@@ -104,11 +104,23 @@ pub struct Breaker {
     /// Kinsoku line-breaking rules. The rules themselves are the same tables
     /// the hanging code uses.
     pub kinsoku: bool,
+    /// Indexed by line end: the advance a hyphenation hyphen adds when the line
+    /// ends there. `None` where no break is legal, which is also how the
+    /// breaker knows a hyphen point: `soft[end].is_some()`.
+    soft: Vec<Option<f32>>,
+    /// Indexed by line end: whether a break there is legal at all (a word
+    /// boundary, a hyphen point, or a character inside a word that cannot fit
+    /// the measure on its own). Empty = every end is legal.
+    legal: Vec<bool>,
 }
 
 fn ratio_badness(slack: f64, room: f64) -> f64 {
     if room <= 1e-9 {
-        return if slack <= FIT_EPS { 0.0 } else { 100.0 * MAX_RATIO.powi(3) };
+        return if slack <= FIT_EPS {
+            0.0
+        } else {
+            100.0 * MAX_RATIO.powi(3)
+        };
     }
     100.0 * (slack / room).min(MAX_RATIO).powi(3)
 }
@@ -160,14 +172,28 @@ impl Breaker {
         for piece in &p.items[hang_start..content_end] {
             width += Self::paid(piece, false);
         }
-        Extent { start: cstart, end: hang_start, hang_end: content_end, width }
+        // A line broken at a hyphenation point carries the hyphen glyph.
+        if end < p.len() {
+            width += f64::from(self.soft.get(end).copied().flatten().unwrap_or(0.0));
+        }
+        Extent {
+            start: cstart,
+            end: hang_start,
+            hang_end: content_end,
+            width,
+        }
     }
 
     /// Cost of line `[start, end)` at line index `line`, or `None` if the line
     /// cannot be set (too long and not shrinkable).
     fn line_cost(&self, p: &Pieces, start: usize, end: usize, line: usize) -> Option<f64> {
         let n = p.len();
-        let flag = if end < n && p.items[end - 1].ch != ' ' && p.items[end].ch != ' ' {
+        if end < n && !self.legal.is_empty() && !self.legal.get(end).copied().unwrap_or(false) {
+            return None;
+        }
+        let hyphenates = end < n && self.soft.get(end).copied().flatten().is_some();
+        let flag = if end < n && p.items[end - 1].ch != ' ' && p.items[end].ch != ' ' && !hyphenates
+        {
             FLAG_COST
         } else {
             0.0
@@ -188,7 +214,11 @@ impl Breaker {
             if last {
                 0.0
             } else {
-                let room = if self.justify { p.stretch_room(ext.start, ext.end) } else { a };
+                let room = if self.justify {
+                    p.stretch_room(ext.start, ext.end)
+                } else {
+                    a
+                };
                 ratio_badness(slack, room)
             }
         } else {
@@ -276,12 +306,49 @@ impl Breaker {
         let mut start = 0;
         while start < n {
             let line = ends.len();
-            let fits = |e: usize| self.extent(p, start, e).width <= self.avail_for(line) + FIT_EPS;
-            let word_end = |e: usize| e == n || p.items[e - 1].ch == ' ';
+            // A justified line may also *shrink* its spaces down to the
+            // paragraph's word-spacing minimum, so a line a little wider than
+            // the measure still fits: Photoshop breaks `06 justify all` after
+            // "exactly" although the natural width is 482 pt in a 480 pt box.
+            let fits = |e: usize| {
+                let ext = self.extent(p, start, e);
+                let a = self.avail_for(line);
+                if ext.width <= a + FIT_EPS {
+                    return true;
+                }
+                e < n
+                    && self.justify
+                    && ext.width - a <= p.shrink_room(ext.start, ext.end) + FIT_EPS
+            };
+            // A legal non-emergency break ends after a space or after a soft
+            // hyphen; both keep whole words whole on the following line.
+            let word_end = |e: usize| {
+                e == n
+                    || matches!(p.items[e - 1].ch, ' ' | '-' | '\u{2010}')
+                    || self.soft.get(e).copied().flatten().is_some()
+            };
+            let legal = |e: usize| {
+                e == n || self.legal.is_empty() || self.legal.get(e).copied().unwrap_or(false)
+            };
+            if std::env::var("PHOTOCRAFT_TRACE").is_ok_and(|v| v == "4") {
+                let a = self.avail_for(line);
+                for e in start + 1..=n {
+                    if !word_end(e) {
+                        continue;
+                    }
+                    let w = self.extent(p, start, e).width;
+                    if (w - a).abs() < 40.0 {
+                        eprintln!(
+                            "greedy line {line} start {start}: e={e} fitw={w:.2} avail={a:.2} legal={}",
+                            legal(e)
+                        );
+                    }
+                }
+            }
             let pick = (start + 1..=n)
                 .rev()
-                .find(|&e| word_end(e) && fits(e))
-                .or_else(|| (start + 1..=n).rev().find(|&e| fits(e)))
+                .find(|&e| legal(e) && word_end(e) && fits(e))
+                .or_else(|| (start + 1..=n).rev().find(|&e| legal(e) && fits(e)))
                 .unwrap_or(start + 1);
             ends.push(pick);
             start = pick;
@@ -297,7 +364,11 @@ impl Breaker {
             return Vec::new();
         }
         let max_a = f64::from(self.avail[0].max(self.avail[1]));
-        let max_nat = p.items.iter().map(|g| f64::from(g.advance)).fold(0.0, f64::max);
+        let max_nat = p
+            .items
+            .iter()
+            .map(|g| f64::from(g.advance))
+            .fold(0.0, f64::max);
         // Content can be several pieces shorter than its span (trailing space,
         // hanging prefix and suffix runs), so the window is generous.
         let window = max_a + 8.0 * max_nat;
@@ -324,7 +395,10 @@ impl Breaker {
                 }
             }
         }
-        assert!(cost[lines][n].is_finite(), "line count not reachable by the greedy breaker");
+        assert!(
+            cost[lines][n].is_finite(),
+            "line count not reachable by the greedy breaker"
+        );
         let mut ends = vec![0usize; lines];
         let mut j = n;
         for k in (1..=lines).rev() {
@@ -359,7 +433,11 @@ impl Breaker {
         }
         for i in ext.start..ext.end {
             let piece = p.items[i];
-            let w = if slack >= 0.0 { piece.stretch } else { piece.shrink };
+            let w = if slack >= 0.0 {
+                piece.stretch
+            } else {
+                piece.shrink
+            };
             out[i - start] = (slack * f64::from(w) / total) as f32;
         }
         out
@@ -369,6 +447,83 @@ impl Breaker {
 impl Breaker {
     /// Constructor used by `area`: hanging and kinsoku are both on.
     pub fn new(avail: [f32; 2], justify: bool, hang: bool) -> Self {
-        Self { avail, justify, hang, kinsoku: true }
+        Self {
+            avail,
+            justify,
+            hang,
+            kinsoku: true,
+            soft: Vec::new(),
+            legal: Vec::new(),
+        }
     }
+
+    /// As [`Breaker::new`] with hyphenation points: `soft[end]` is the advance
+    /// of the hyphen drawn when a line ends at `end`.
+    pub fn with_hyphens(
+        avail: [f32; 2],
+        justify: bool,
+        hang: bool,
+        soft: Vec<Option<f32>>,
+    ) -> Self {
+        Self {
+            avail,
+            justify,
+            hang,
+            kinsoku: true,
+            soft,
+            legal: Vec::new(),
+        }
+    }
+
+    /// Restricts breaks to legal line ends: after a space, at a hyphen point,
+    /// or inside a word whose natural width alone exceeds the measure (a long
+    /// word, or CJK text without spaces). Without this filter a cost optimiser
+    /// happily splits `margin` into `mar` + `gin`.
+    pub fn with_legal_breaks(mut self, legal: Vec<bool>) -> Self {
+        self.legal = legal;
+        self
+    }
+}
+
+/// End indices where a line may break: word boundaries, hyphen points, and
+/// character positions inside words wider than the widest measure.
+pub fn legal_breaks(p: &Pieces, avail_max: f32, soft: &[Option<f32>]) -> Vec<bool> {
+    let n = p.len();
+    let mut legal = vec![false; n + 1];
+    legal[n] = true;
+    let mut i = 0;
+    while i < n {
+        if p.items[i].ch == ' ' {
+            // The break belongs after the space.
+            if i + 1 <= n {
+                legal[i + 1] = true;
+            }
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut width = 0.0f64;
+        while i < n && p.items[i].ch != ' ' {
+            width += f64::from(p.items[i].advance);
+            let ch = p.items[i].ch;
+            i += 1;
+            // A hard hyphen is a break opportunity in its own right: Photoshop
+            // breaks "first-line" as "first-" / "line" without adding a second
+            // hyphen (measured on `10_all_features.psd` layer 05).
+            if (ch == '-' || ch == '\u{2010}') && i < n && p.items[i].ch != ' ' {
+                legal[i] = true;
+            }
+        }
+        if width > f64::from(avail_max) + 1e-4 {
+            for slot in legal.iter_mut().take(i).skip(start + 1) {
+                *slot = true;
+            }
+        }
+    }
+    for (end, hyphen) in soft.iter().enumerate().take(n) {
+        if hyphen.is_some() {
+            legal[end] = true;
+        }
+    }
+    legal
 }

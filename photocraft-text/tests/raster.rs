@@ -8,11 +8,12 @@
 //! `cargo test -p photocraft-text --test raster -- --nocapture overlay_sweep`
 
 use photocraft_psd::PsdFile;
-use photocraft_text::area::{first_baseline_ratio, layout_area, Justification, ParagraphStyle};
+use photocraft_text::area::{Justification, ParagraphStyle, first_baseline_ratio, layout_area};
 use photocraft_text::font::Face;
 use photocraft_text::layout::TextStyle;
-use photocraft_text::outline::{glyph_contours, Contours, Point};
+use photocraft_text::outline::{Contours, Point, glyph_contours};
 use photocraft_text::raster::{AlphaCurve, Canvas, Coverage};
+use photocraft_text::typography::{decoration_thickness, strikeout_band, underline_band};
 use std::path::{Path, PathBuf};
 
 const W: u32 = 1200;
@@ -32,16 +33,31 @@ struct Spec {
 }
 
 fn load_spec(path: &Path) -> Spec {
-    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).expect("read spec")).expect("parse spec");
-    let num = |k: &str, d: f32| v.get(k).and_then(|x| x.as_f64()).map(|x| x as f32).unwrap_or(d);
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("read spec"))
+            .expect("parse spec");
+    let num = |k: &str, d: f32| {
+        v.get(k)
+            .and_then(|x| x.as_f64())
+            .map(|x| x as f32)
+            .unwrap_or(d)
+    };
     Spec {
-        text: v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        text: v
+            .get("text")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
         size: num("size", 36.0),
         x: num("x", 0.0),
         y: num("y", 0.0),
         width: num("width", 600.0),
         height: num("height", 200.0),
-        justification: v.get("justification").and_then(|x| x.as_str()).unwrap_or("left").to_string(),
+        justification: v
+            .get("justification")
+            .and_then(|x| x.as_str())
+            .unwrap_or("left")
+            .to_string(),
         tracking: num("tracking", 0.0) as i16,
         leading: num("leading", 0.0),
     }
@@ -59,7 +75,10 @@ fn parse_just(s: &str) -> Justification {
 /// Alpha plane of a named PSD layer placed on a W x H canvas.
 fn alpha_plane(psd: &PsdFile, name: &str) -> Vec<u8> {
     let mut plane = vec![0u8; (W * H) as usize];
-    let layer = psd.iter_layers().find(|l| l.name() == name).unwrap_or_else(|| panic!("layer {name} missing"));
+    let layer = psd
+        .iter_layers()
+        .find(|l| l.name() == name)
+        .unwrap_or_else(|| panic!("layer {name} missing"));
     let img = layer.rgba8().expect("decode layer");
     for y in 0..img.height as i32 {
         for x in 0..img.width as i32 {
@@ -75,22 +94,51 @@ fn alpha_plane(psd: &PsdFile, name: &str) -> Vec<u8> {
 }
 
 /// Re-renders a spec with the given rasteriser settings; returns the alpha plane.
-fn render(face: &Face<'_>, spec: &Spec, coverage: Coverage, curve: AlphaCurve, snap: bool) -> Vec<u8> {
+fn render(
+    face: &Face<'_>,
+    spec: &Spec,
+    coverage: Coverage,
+    curve: AlphaCurve,
+    snap: bool,
+) -> Vec<u8> {
     render_shifted(face, spec, coverage, curve, snap, (0.0, 0.0))
 }
 
 /// As [`render`], with every glyph origin moved by `shift` device pixels.
-fn render_shifted(face: &Face<'_>, spec: &Spec, coverage: Coverage, curve: AlphaCurve, snap: bool, shift: (f32, f32)) -> Vec<u8> {
+fn render_shifted(
+    face: &Face<'_>,
+    spec: &Spec,
+    coverage: Coverage,
+    curve: AlphaCurve,
+    snap: bool,
+    shift: (f32, f32),
+) -> Vec<u8> {
     let upm = face.units_per_em() as f32;
     let ascender = first_baseline_ratio(face);
     let style = TextStyle {
         size: spec.size,
         tracking: spec.tracking,
-        leading: Some(if spec.leading > 0.0 { spec.leading } else { spec.size * 1.2 }),
+        leading: Some(if spec.leading > 0.0 {
+            spec.leading
+        } else {
+            spec.size * 1.2
+        }),
         ..Default::default()
     };
-    let para = ParagraphStyle { justification: parse_just(&spec.justification), ..Default::default() };
-    let layout = layout_area(face, &spec.text, &style, &para, spec.width, spec.height, (spec.x, spec.y), ascender);
+    let para = ParagraphStyle {
+        justification: parse_just(&spec.justification),
+        ..Default::default()
+    };
+    let layout = layout_area(
+        face,
+        &spec.text,
+        &style,
+        &para,
+        spec.width,
+        spec.height,
+        (spec.x, spec.y),
+        ascender,
+    );
     let mut canvas = Canvas::new(W, H);
     canvas.coverage = coverage;
     canvas.curve = curve;
@@ -103,7 +151,14 @@ fn render_shifted(face: &Face<'_>, spec: &Spec, coverage: Coverage, curve: Alpha
             if contours.is_empty() {
                 continue;
             }
-            canvas.mask_contours(&contours, spec.size / upm, g.x + shift.0, screen_baseline + shift.1, [0, 0, 0], 1.0);
+            canvas.mask_contours(
+                &contours,
+                spec.size / upm,
+                g.x + shift.0,
+                screen_baseline + shift.1,
+                [0, 0, 0],
+                1.0,
+            );
         }
     }
     canvas.pixels.chunks_exact(4).map(|p| p[3]).collect()
@@ -141,7 +196,11 @@ fn load_pairs() -> Option<Vec<Pair>> {
         let spec_path = dir.join(format!("spec_{i}.json"));
         let psd_path = dir.join(format!("overlay_{i}.psd"));
         if !spec_path.exists() || !psd_path.exists() {
-            eprintln!("skip: {} or {} absent", spec_path.display(), psd_path.display());
+            eprintln!(
+                "skip: {} or {} absent",
+                spec_path.display(),
+                psd_path.display()
+            );
             return None;
         }
         let psd = PsdFile::open(&psd_path).expect("io").expect("parse psd");
@@ -157,13 +216,22 @@ fn load_pairs() -> Option<Vec<Pair>> {
 fn configs() -> Vec<(String, Coverage, AlphaCurve, bool)> {
     let mut out = Vec::new();
     for snap in [false, true] {
-        for coverage in [Coverage::Scanlines(4), Coverage::Scanlines(16), Coverage::Area] {
+        for coverage in [
+            Coverage::Scanlines(4),
+            Coverage::Scanlines(16),
+            Coverage::Area,
+        ] {
             let mut curves = vec![AlphaCurve::Linear, AlphaCurve::Srgb];
             for g in [0.4f32, 0.5, 0.6, 0.7, 0.8, 0.9, 1.1, 1.2] {
                 curves.push(AlphaCurve::Power(g));
             }
             for curve in curves {
-                out.push((format!("{coverage:?} {curve:?} snap={snap}"), coverage, curve, snap));
+                out.push((
+                    format!("{coverage:?} {curve:?} snap={snap}"),
+                    coverage,
+                    curve,
+                    snap,
+                ));
             }
         }
     }
@@ -178,9 +246,18 @@ fn overlay_baseline_reproduces_rust_layer() {
     let font = std::fs::read(FONT).expect("font");
     let face = Face::parse(&font).expect("face");
     for (i, p) in pairs.iter().enumerate() {
-        let ours = render(&face, &p.spec, Coverage::Scanlines(4), AlphaCurve::Linear, false);
+        let ours = render(
+            &face,
+            &p.spec,
+            Coverage::Scanlines(4),
+            AlphaCurve::Linear,
+            false,
+        );
         let (mean, over) = score(&ours, &p.rust_layer);
-        println!("pair {} rust_layer vs re-render: mean {mean:.3} over32 {over}", i + 1);
+        println!(
+            "pair {} rust_layer vs re-render: mean {mean:.3} over32 {over}",
+            i + 1
+        );
     }
 }
 
@@ -196,7 +273,18 @@ fn overlay_sweep() {
 
     let baseline: Vec<(f64, usize)> = pairs
         .iter()
-        .map(|p| score(&render(&face, &p.spec, Coverage::Scanlines(4), AlphaCurve::Linear, false), &p.photoshop))
+        .map(|p| {
+            score(
+                &render(
+                    &face,
+                    &p.spec,
+                    Coverage::Scanlines(4),
+                    AlphaCurve::Linear,
+                    false,
+                ),
+                &p.photoshop,
+            )
+        })
         .collect();
     println!("baseline Scanlines(4) Linear snap=false:");
     for (i, (m, o)) in baseline.iter().enumerate() {
@@ -214,12 +302,24 @@ fn overlay_sweep() {
 
     let default_scores: Vec<(f64, usize)> = pairs
         .iter()
-        .map(|p| score(&render(&face, &p.spec, default_cfg.0, default_cfg.1, default_cfg.2), &p.photoshop))
+        .map(|p| {
+            score(
+                &render(&face, &p.spec, default_cfg.0, default_cfg.1, default_cfg.2),
+                &p.photoshop,
+            )
+        })
         .collect();
     println!("defaults {default_cfg:?}:");
     for (i, ((dm, _), (bm, _))) in default_scores.iter().zip(&baseline).enumerate() {
-        println!("  pair {}: default mean {dm:.3} baseline mean {bm:.3}", i + 1);
-        assert!(dm <= bm, "pair {}: default worse than baseline ({dm} > {bm})", i + 1);
+        println!(
+            "  pair {}: default mean {dm:.3} baseline mean {bm:.3}",
+            i + 1
+        );
+        assert!(
+            dm <= bm,
+            "pair {}: default worse than baseline ({dm} > {bm})",
+            i + 1
+        );
     }
 }
 
@@ -250,7 +350,12 @@ fn off_curve_start_is_rotation_invariant() {
         (100.0, 100.0, true),
         (0.0, 100.0, true),
     ];
-    let all_off = [(0.0, 0.0, false), (100.0, 0.0, false), (100.0, 100.0, false), (0.0, 100.0, false)];
+    let all_off = [
+        (0.0, 0.0, false),
+        (100.0, 0.0, false),
+        (100.0, 100.0, false),
+        (0.0, 100.0, false),
+    ];
     for list in [&base[..], &all_off[..]] {
         for coverage in [Coverage::Scanlines(4), Coverage::Area] {
             let reference = alpha_of(&pts(list), coverage);
@@ -259,8 +364,16 @@ fn off_curve_start_is_rotation_invariant() {
                 let mut rot = list.to_vec();
                 rot.rotate_left(k);
                 let got = alpha_of(&pts(&rot), coverage);
-                let max_diff = reference.iter().zip(&got).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
-                assert!(max_diff <= 2, "rotation {k} with {coverage:?}: max diff {max_diff}");
+                let max_diff = reference
+                    .iter()
+                    .zip(&got)
+                    .map(|(a, b)| (*a as i32 - *b as i32).abs())
+                    .max()
+                    .unwrap_or(0);
+                assert!(
+                    max_diff <= 2,
+                    "rotation {k} with {coverage:?}: max diff {max_diff}"
+                );
             }
         }
     }
@@ -272,7 +385,12 @@ fn off_curve_start_is_rotation_invariant() {
 #[test]
 fn overlapping_contours_follow_nonzero_rule() {
     let square = |x0: f32, y0: f32, x1: f32, y1: f32, cw: bool| {
-        let mut v = vec![(x0, y0, true), (x1, y0, true), (x1, y1, true), (x0, y1, true)];
+        let mut v = vec![
+            (x0, y0, true),
+            (x1, y0, true),
+            (x1, y1, true),
+            (x0, y1, true),
+        ];
         if !cw {
             v.reverse();
         }
@@ -280,8 +398,14 @@ fn overlapping_contours_follow_nonzero_rule() {
     };
     for coverage in [Coverage::Scanlines(4), Coverage::Area] {
         let same: Contours = vec![
-            square(10.0, 10.0, 60.0, 60.0, true).iter().map(|&(x, y, on)| Point { x, y, on }).collect(),
-            square(40.0, 40.0, 90.0, 90.0, true).iter().map(|&(x, y, on)| Point { x, y, on }).collect(),
+            square(10.0, 10.0, 60.0, 60.0, true)
+                .iter()
+                .map(|&(x, y, on)| Point { x, y, on })
+                .collect(),
+            square(40.0, 40.0, 90.0, 90.0, true)
+                .iter()
+                .map(|&(x, y, on)| Point { x, y, on })
+                .collect(),
         ];
         let plane = alpha_of(&same, coverage);
         // Device x = 20 + x, y = 180 - y. A -> x 30..80, rows 120..170; B -> x 60..110, rows 90..140.
@@ -291,11 +415,21 @@ fn overlapping_contours_follow_nonzero_rule() {
         assert_eq!(alpha_at(&plane, 100, 150), 0, "outside {coverage:?}");
 
         let opposite: Contours = vec![
-            square(10.0, 10.0, 60.0, 60.0, true).iter().map(|&(x, y, on)| Point { x, y, on }).collect(),
-            square(40.0, 40.0, 90.0, 90.0, false).iter().map(|&(x, y, on)| Point { x, y, on }).collect(),
+            square(10.0, 10.0, 60.0, 60.0, true)
+                .iter()
+                .map(|&(x, y, on)| Point { x, y, on })
+                .collect(),
+            square(40.0, 40.0, 90.0, 90.0, false)
+                .iter()
+                .map(|&(x, y, on)| Point { x, y, on })
+                .collect(),
         ];
         let plane = alpha_of(&opposite, coverage);
-        assert_eq!(alpha_at(&plane, 70, 130), 0, "opposite-winding overlap is a hole {coverage:?}");
+        assert_eq!(
+            alpha_at(&plane, 70, 130),
+            0,
+            "opposite-winding overlap is a hole {coverage:?}"
+        );
         assert_eq!(alpha_at(&plane, 35, 165), 255, "A only {coverage:?}");
     }
 }
@@ -313,14 +447,27 @@ fn overlay_phase_search() {
         for iy in -8i32..=8 {
             for ix in -8i32..=8 {
                 let shift = (ix as f32 / 8.0, iy as f32 / 8.0);
-                let ours = render_shifted(&face, &p.spec, Coverage::Scanlines(4), AlphaCurve::Linear, false, shift);
+                let ours = render_shifted(
+                    &face,
+                    &p.spec,
+                    Coverage::Scanlines(4),
+                    AlphaCurve::Linear,
+                    false,
+                    shift,
+                );
                 let (m, o) = score(&ours, &p.photoshop);
                 if m < best.0 {
                     best = (m, o, shift);
                 }
             }
         }
-        println!("pair {}: best shift {:?} mean {:.3} over32 {}", i + 1, best.2, best.0, best.1);
+        println!(
+            "pair {}: best shift {:?} mean {:.3} over32 {}",
+            i + 1,
+            best.2,
+            best.0,
+            best.1
+        );
     }
 }
 
@@ -349,8 +496,18 @@ fn overlay_ink_geometry() {
     let font = std::fs::read(FONT).expect("font");
     let face = Face::parse(&font).expect("face");
     for (i, p) in pairs.iter().enumerate() {
-        let ours = render(&face, &p.spec, Coverage::Scanlines(4), AlphaCurve::Linear, false);
-        println!("pair {} PS   bbox/centroid {:?}", i + 1, ink_stats(&p.photoshop));
+        let ours = render(
+            &face,
+            &p.spec,
+            Coverage::Scanlines(4),
+            AlphaCurve::Linear,
+            false,
+        );
+        println!(
+            "pair {} PS   bbox/centroid {:?}",
+            i + 1,
+            ink_stats(&p.photoshop)
+        );
         println!("pair {} ours bbox/centroid {:?}", i + 1, ink_stats(&ours));
     }
 }
@@ -369,7 +526,10 @@ fn all_glyphs_parse() {
     for gid in 0..face.num_glyphs() {
         let contours = glyph_contours(&face, gid).unwrap_or_else(|e| panic!("gid {gid}: {e:?}"));
         for c in &contours {
-            assert!(c.len() >= 2 || c.is_empty(), "gid {gid}: degenerate contour");
+            assert!(
+                c.len() >= 2 || c.is_empty(),
+                "gid {gid}: degenerate contour"
+            );
         }
         if !contours.is_empty() && contours.len() > 1 {
             composites += 1;
@@ -380,12 +540,22 @@ fn all_glyphs_parse() {
 
 fn rgba_at(canvas: &Canvas, x: u32, y: u32) -> [u8; 4] {
     let i = ((y * canvas.width + x) * 4) as usize;
-    [canvas.pixels[i], canvas.pixels[i + 1], canvas.pixels[i + 2], canvas.pixels[i + 3]]
+    [
+        canvas.pixels[i],
+        canvas.pixels[i + 1],
+        canvas.pixels[i + 2],
+        canvas.pixels[i + 3],
+    ]
 }
 
 /// Unit square (font units == device pixels) with its bottom-left at (20, 180) on a 200x200 canvas.
 fn square(w: f32, h: f32) -> Contours {
-    pts(&[(0.0, 0.0, true), (w, 0.0, true), (w, h, true), (0.0, h, true)])
+    pts(&[
+        (0.0, 0.0, true),
+        (w, 0.0, true),
+        (w, h, true),
+        (0.0, h, true),
+    ])
 }
 
 /// `sy = 2` doubles the glyph height in y, leaves the left edge where it was, and keeps the baseline.
@@ -443,9 +613,15 @@ fn skew_turns_rectangle_into_parallelogram() {
     let shift = top - bottom;
     // Row centres are 0.5 px inside the top (py=20) and bottom (py=0) edges.
     let expected = skew as f64 * (height as f64 - 1.0);
-    assert!((shift - expected).abs() < 0.5, "top-bottom centre shift {shift}, expected {expected}");
+    assert!(
+        (shift - expected).abs() < 0.5,
+        "top-bottom centre shift {shift}, expected {expected}"
+    );
     // Bottom row samples py 0..1, so its centre is 25 + skew * 0.5.
-    assert!((bottom - (25.0 + skew as f64 * 0.5)).abs() < 0.5, "bottom centre {bottom}");
+    assert!(
+        (bottom - (25.0 + skew as f64 * 0.5)).abs() < 0.5,
+        "bottom centre {bottom}"
+    );
 }
 
 /// Glyphs in different colours composite over each other without bleeding:
@@ -457,10 +633,26 @@ fn per_glyph_colours_do_not_bleed() {
     canvas.mask_contours(&square(10.0, 10.0), 1.0, 20.0, 180.0, [255, 0, 0], 1.0);
     canvas.mask_contours(&square(10.0, 10.0), 1.0, 25.0, 180.0, [0, 0, 255], 1.0);
 
-    assert_eq!(rgba_at(&canvas, 21, 175), [255, 0, 0, 255], "first glyph lost its colour");
-    assert_eq!(rgba_at(&canvas, 27, 175), [0, 0, 255, 255], "overlap should show second colour");
-    assert_eq!(rgba_at(&canvas, 33, 175), [0, 0, 255, 255], "second glyph colour wrong");
-    assert_eq!(rgba_at(&canvas, 36, 175), [0, 0, 0, 0], "ink outside both glyphs");
+    assert_eq!(
+        rgba_at(&canvas, 21, 175),
+        [255, 0, 0, 255],
+        "first glyph lost its colour"
+    );
+    assert_eq!(
+        rgba_at(&canvas, 27, 175),
+        [0, 0, 255, 255],
+        "overlap should show second colour"
+    );
+    assert_eq!(
+        rgba_at(&canvas, 33, 175),
+        [0, 0, 255, 255],
+        "second glyph colour wrong"
+    );
+    assert_eq!(
+        rgba_at(&canvas, 36, 175),
+        [0, 0, 0, 0],
+        "ink outside both glyphs"
+    );
 }
 
 /// An underline covers exactly its x range and the thickness rows, and touches no other row.
@@ -479,7 +671,11 @@ fn underline_spans_x_range_and_thickness_only() {
         assert_eq!(rgba_at(&canvas, 9, y)[3], 0, "column 9 touched");
         assert_eq!(rgba_at(&canvas, 30, y)[3], 0, "column 30 touched");
         for x in 10..30u32 {
-            assert_eq!(rgba_at(&canvas, x, y), [255, 255, 255, 255], "gap at ({x},{y})");
+            assert_eq!(
+                rgba_at(&canvas, x, y),
+                [255, 255, 255, 255],
+                "gap at ({x},{y})"
+            );
         }
     }
 }
@@ -499,19 +695,96 @@ fn underline_antialiases_top_and_bottom_rows() {
 
 #[test]
 fn grid_coverage_counts_point_samples() {
-    let full = pts(&[(0.0, 0.0, true), (10.0, 0.0, true), (10.0, 10.0, true), (0.0, 10.0, true), (0.0, 0.0, true)]);
-    for coverage in [Coverage::Grid(16), Coverage::Grid(15), Coverage::Area, Coverage::Scanlines(4)] {
+    let full = pts(&[
+        (0.0, 0.0, true),
+        (10.0, 0.0, true),
+        (10.0, 10.0, true),
+        (0.0, 10.0, true),
+        (0.0, 0.0, true),
+    ]);
+    for coverage in [
+        Coverage::Grid(16),
+        Coverage::Grid(15),
+        Coverage::Area,
+        Coverage::Scanlines(4),
+    ] {
         let plane = alpha_of(&full, coverage);
         assert_eq!(alpha_at(&plane, 25, 175), 255, "{coverage:?} interior");
         assert_eq!(alpha_at(&plane, 15, 175), 0, "{coverage:?} outside");
     }
     // Half-pixel stem: every integrator must land on ~50 % alpha.
-    let half = pts(&[(0.0, 0.0, true), (0.5, 0.0, true), (0.5, 10.0, true), (0.0, 10.0, true), (0.0, 0.0, true)]);
-    for coverage in [Coverage::Grid(16), Coverage::Grid(15), Coverage::Area, Coverage::Scanlines(4)] {
+    let half = pts(&[
+        (0.0, 0.0, true),
+        (0.5, 0.0, true),
+        (0.5, 10.0, true),
+        (0.0, 10.0, true),
+        (0.0, 0.0, true),
+    ]);
+    for coverage in [
+        Coverage::Grid(16),
+        Coverage::Grid(15),
+        Coverage::Area,
+        Coverage::Scanlines(4),
+    ] {
         let plane = alpha_of(&half, coverage);
         // Odd grids straddle the edge (7/15 or 8/15 samples), then Sharp's
         // 15-step quantisation rounds; both stay within a couple of levels.
         let a = alpha_at(&plane, 20, 175);
         assert!((110..=140).contains(&a), "{coverage:?} half stem {a}");
+    }
+}
+
+/// The measured rule bands reproduce the three stored rasters' row coverage.
+///
+/// Photoshop rasterises the rule on its 4x subpixel grid, so every row is a
+/// quarter-pixel multiple. Measured on `out/psd_showcase/10_all_features.psd`
+/// (stored alpha, device row = layer row):
+///
+/// | layer | rule | size | baseline row | rows  | Photoshop alpha |
+/// |-------|------|------|--------------|-------|-----------------|
+/// | `01`  | underline | 30 | 22 | 28, 29 | 128, 255 |
+/// | `02`  | strike box | 26 | 20 | 6, 7  | 128, 192 |
+/// | `07`  | underline | 24 | 18 | 23, 24 | 192, 128 |
+///
+/// The canvas stores `round(coverage * 255)`, one level below Photoshop's
+/// `floor(coverage * 256)` on the 3/4 rows (191 vs 192); that difference is
+/// below the harness's 8-level threshold.
+#[test]
+fn measured_rule_bands_match_photoshop_rows() {
+    // (size, baseline row, rule, expected rows and alpha)
+    let cases = [
+        (
+            30.0f32,
+            22.0f32,
+            underline_band(30.0),
+            [(28u32, 128u8), (29, 255)],
+        ),
+        (26.0, 20.0, strikeout_band(26.0), [(6, 128), (7, 191)]),
+        (24.0, 18.0, underline_band(24.0), [(23, 191), (24, 128)]),
+    ];
+    for (size, baseline, band, rows) in cases {
+        assert_eq!(
+            band.thickness,
+            decoration_thickness(size),
+            "thickness for {size} pt"
+        );
+        let mut canvas = Canvas::new(64, 64);
+        canvas.underline(
+            8.0,
+            40.0,
+            baseline,
+            band.thickness,
+            band.offset,
+            [0, 0, 0],
+            1.0,
+        );
+        let mut touched = Vec::new();
+        for y in 0..64u32 {
+            let alpha = rgba_at(&canvas, 20, y)[3];
+            if alpha != 0 {
+                touched.push((y, alpha));
+            }
+        }
+        assert_eq!(touched, rows.to_vec(), "{size} pt rule rows");
     }
 }

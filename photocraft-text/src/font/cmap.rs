@@ -37,7 +37,10 @@ pub fn pick_subtable(data: &[u8]) -> Result<(usize, u16)> {
     }
     match best {
         Some((_, off, fmt)) => Ok((off, fmt)),
-        None => Err(Error::Unsupported { what: "cmap subtable", value: 0 }),
+        None => Err(Error::Unsupported {
+            what: "cmap subtable",
+            value: 0,
+        }),
     }
 }
 

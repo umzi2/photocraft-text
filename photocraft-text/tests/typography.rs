@@ -13,7 +13,14 @@ fn load(name: &str) -> Vec<u8> {
 }
 
 fn glyph(ch: char, advance: f32) -> GlyphPos {
-    GlyphPos { gid: 0, ch, x: 0.0, y: 0.0, advance }
+    GlyphPos {
+        gid: 0,
+        ch,
+        x: 0.0,
+        y: 0.0,
+        advance,
+        nominal_advance: advance,
+    }
 }
 
 fn approx(a: f32, b: f32) -> bool {
@@ -34,7 +41,10 @@ fn auto_leading_table_matches_ratio() {
             );
         }
     }
-    let measured = AUTO_LEADING_TABLE.iter().filter(|r| r.leading.is_some()).count();
+    let measured = AUTO_LEADING_TABLE
+        .iter()
+        .filter(|r| r.leading.is_some())
+        .count();
     assert!(measured >= 4, "need several measured fonts, got {measured}");
 }
 
@@ -56,7 +66,10 @@ fn hanging_off_by_default_and_no_shift() {
 
 #[test]
 fn hanging_opening_shifts_by_advance() {
-    let rules = Kinsoku { enabled: true, ..Kinsoku::default() };
+    let rules = Kinsoku {
+        enabled: true,
+        ..Kinsoku::default()
+    };
     let line = [glyph('(', 4.0), glyph('a', 5.0)];
     assert!(approx(hanging_adjust(&line, 40.0, &rules), -4.0));
     // Non-opening first glyph: no hang.
@@ -69,7 +82,10 @@ fn hanging_opening_shifts_by_advance() {
 
 #[test]
 fn trailing_punctuation_hangs_up_to_advance() {
-    let rules = Kinsoku { enabled: true, ..Kinsoku::default() };
+    let rules = Kinsoku {
+        enabled: true,
+        ..Kinsoku::default()
+    };
     // Content fits, overhang 3 <= advance 3.
     assert!(can_hang_trailing(40.0, '.', 3.0, 40.0, &rules));
     // Overhang 1 is within the advance.
@@ -79,7 +95,13 @@ fn trailing_punctuation_hangs_up_to_advance() {
     // Non-punctuation never hangs.
     assert!(!can_hang_trailing(40.0, 'a', 3.0, 40.0, &rules));
     // Disabled rules never hang.
-    assert!(!can_hang_trailing(40.0, '.', 3.0, 40.0, &Kinsoku::default()));
+    assert!(!can_hang_trailing(
+        40.0,
+        '.',
+        3.0,
+        40.0,
+        &Kinsoku::default()
+    ));
 }
 
 #[test]
@@ -100,7 +122,10 @@ fn paragraph_spacing_before_after_and_indents() {
         line_count: 1,
         leading: 10.0,
     };
-    let empty = ParagraphBlock { line_count: 0, ..p2 };
+    let empty = ParagraphBlock {
+        line_count: 0,
+        ..p2
+    };
     let out = apply_paragraph_spacing(100.0, &[p1, empty, p2]);
     assert_eq!(out.len(), 3);
     assert!(approx(out[0].baseline, 100.0) && approx(out[0].x_offset, 5.0));
@@ -156,8 +181,17 @@ fn faux_italic_skew_geometry() {
 
 #[test]
 fn faux_bold_strength() {
-    assert!(approx(faux_bold_extra_advance(24.0), 1.0));
-    assert!(approx(faux_bold_stroke_offset(24.0), 0.5));
+    // Measured on `10_all_features.psd` layer `01 capitalisation underline
+    // faux bold`: 32 glyphs at 30 pt widen the run by 25.9 pt, i.e. size/37 per
+    // glyph (Photoshop's extra is smaller than the old size/24 guess).
+    assert!(approx(
+        faux_bold_extra_advance(24.0),
+        24.0 / FAUX_BOLD_DIVISOR
+    ));
+    assert!(approx(
+        faux_bold_stroke_offset(24.0),
+        12.0 / FAUX_BOLD_DIVISOR
+    ));
 }
 
 #[test]
