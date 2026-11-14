@@ -316,7 +316,15 @@ fn parse_style_run(
             .and_then(txt2_language),
         no_break: get("NoBreak").and_then(Value::as_bool),
         baseline: get("FontBaseline").and_then(Value::as_i64),
-        rotate_roman: get("BaselineDirection")
+        // `BaselineDirection` is a per-run property: Photoshop composes a run
+        // that omits it upright even though every PSD's document normal style
+        // sheet stores `2` (`Untitled-15`'s vertical layers: their runs omit
+        // it, Photoshop's own forced recompose writes `1`, and its stored
+        // raster is the upright composition — against the source layer our
+        // upright render scores IoU 0.815, the turned one 0.40). Inheriting
+        // the sheet value therefore turned every vertical run that omitted it.
+        rotate_roman: data
+            .get("BaselineDirection")
             .and_then(Value::as_i64)
             .map(|v| v == 2),
         features,

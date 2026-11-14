@@ -423,6 +423,19 @@ fn vertical_prepare<'a>(
         let pitch = pitch_of(paragraph);
         if placed_any {
             column_x -= pitch;
+            // The first column's cell is anchored on the font's `b0` inset and
+            // may overhang the frame's right edge by `size/2 - b0`; every later
+            // cell stays inside that edge. Measured on `Untitled-15`'s
+            // 3.3 pt-pitch layer (121 pt box, Times at 33 pt): the caches put
+            // the first centre at 121 - 11.99533 = 109.00467, the second at
+            // 121 - 16.5 = 104.5, then 3.3 pt steps (101.2, 97.9, 94.6, 91.3).
+            // `first_centre - pitch` alone would put the second at 105.70467
+            // and leave the block 1.2 pt (2 px at the layer's 1.5011 scale) too
+            // narrow. With a pitch larger than the overhang (`box_v`, u12) the
+            // minimum keeps the plain step.
+            if let Some((width, _)) = box_size {
+                column_x = column_x.min(width - size * 0.5);
+            }
         }
         // Photoshop **stops composing** a boxed vertical line at the first column
         // whose em cell lies entirely left of the frame (`cell centre + size/2 <
