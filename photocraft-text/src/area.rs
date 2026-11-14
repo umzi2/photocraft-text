@@ -129,12 +129,42 @@ pub struct Line {
     pub baseline: f32,
     pub width: f32,
     pub attrs: Vec<GlyphAttrs>,
+    /// Bytes of the layer text the line's glyphs were shaped from, without the
+    /// paragraph separator (`attrs`' source ranges, min start .. max end).
+    /// Empty when the line has no glyphs.
+    pub range_start: usize,
+    pub range_end: usize,
+    /// Index of the paragraph the line belongs to, in text order.
+    pub paragraph: usize,
+}
+
+/// A paragraph that produced no line because it holds no text.
+///
+/// It still occupies one leading of vertical space, so a caret needs a
+/// baseline to sit on; [`AreaLayout::lines`] cannot carry it (no glyphs).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EmptyParagraph {
+    /// Index of the paragraph in text order.
+    pub paragraph: usize,
+    /// The paragraph's separator bytes in the layer text (empty for a trailing
+    /// empty paragraph).
+    pub range_start: usize,
+    pub range_end: usize,
+    /// Where the paragraph's first line would have started: its baseline in the
+    /// layout's y-up space (before the empty paragraph steps one leading).
+    pub baseline: f32,
+    /// X of the paragraph's first-line start (origin plus the indents).
+    pub x: f32,
+    /// The leading the empty paragraph occupies (`size x auto_leading`).
+    pub leading: f32,
 }
 
 /// Result of laying out one paragraph inside a box.
 #[derive(Clone, Debug, Default)]
 pub struct AreaLayout {
     pub lines: Vec<Line>,
+    /// Empty paragraphs in text order, with the baseline a caret must use.
+    pub empty: Vec<EmptyParagraph>,
 }
 
 impl AreaLayout {
@@ -203,6 +233,8 @@ pub fn layout_area(
 /// One shaped paragraph ready for line breaking.
 struct Para {
     items: Vec<(GlyphPos, GlyphAttrs)>,
+    /// Bytes of the layer text this paragraph covers, separator excluded.
+    span: (usize, usize),
     /// Indexed by line end (0 ..= items.len()): the hyphen Photoshop draws when
     /// the line breaks there. `None` means no hyphenation point.
     soft: Vec<Option<SoftBreak>>,
@@ -228,6 +260,8 @@ fn plain_attrs(style: &TextStyle) -> GlyphAttrs {
         x_scale: 1.0,
         faux_italic: false,
         leading: style.leading_pt(),
+        rotate: false,
+        source: (0, 0),
     }
 }
 
@@ -287,7 +321,7 @@ pub fn layout_area_paragraphs_with_advances(
     let mut offset = 0usize;
     for (i, span) in paragraph_spans(text).into_iter().enumerate() {
         let pstyle = paragraph_style(paragraphs, i);
-        let slice = &text[span.bytes];
+        let slice = &text[span.bytes.clone()];
         let shape_style = TextStyle {
             auto_leading: pstyle.auto_leading,
             ..*style
@@ -311,6 +345,7 @@ pub fn layout_area_paragraphs_with_advances(
         }
         paras.push(Para {
             items,
+            span: (span.bytes.start, span.bytes.end),
             soft,
             style: pstyle,
         });
@@ -386,6 +421,36 @@ pub fn layout_area_runs_paragraphs(
     )
 }
 
+/// Photoshop's composed-cache corrections for one layer (`Txt2` `/3`).
+///
+/// The cache records two kinds of correction and the engine applies them the
+/// way CoolType did:
+///
+/// * `glyphs` carries a correction per **shaped glyph** in text order (the
+///   optical-kerning and tracking sheets); it is applied by
+///   [`apply_advances`];
+/// * `spaces` carries a correction per **word space** in text order — the
+///   every-line composer balances a line by moving its spaces
+///   (`05 area indents spacing` records eight `-.0468` values on line 1 and
+///   seven `+.0468` on lines 4/5 of its cache), which no per-glyph sheet can
+///   express because the spaces move together with the words.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CacheDeltas<'a> {
+    /// One correction per shaped glyph in text order; empty when the cache has
+    /// no glyph sheet.
+    pub glyphs: &'a [f32],
+    /// One correction per word space in text order; empty when the cache has
+    /// no word-spacing sheet.
+    pub spaces: &'a [f32],
+}
+
+impl CacheDeltas<'_> {
+    /// `true` when there is nothing to correct.
+    pub fn is_empty(&self) -> bool {
+        self.glyphs.is_empty() && self.spaces.is_empty()
+    }
+}
+
 /// As [`layout_area_runs_paragraphs`] with per-glyph advance corrections, in
 /// points, one per shaped glyph in text order (spaces included).
 #[allow(clippy::too_many_arguments)]
@@ -401,7 +466,49 @@ pub fn layout_area_runs_paragraphs_with_advances(
     ascender_ratio: f32,
     advances: &[f32],
 ) -> AreaLayout {
-    layout_area_runs_paragraphs_impl(faces, text, runs, style, paragraphs, width, height, origin, ascender_ratio, advances, false)
+    layout_area_runs_paragraphs_impl(
+        faces,
+        text,
+        runs,
+        style,
+        paragraphs,
+        width,
+        height,
+        origin,
+        ascender_ratio,
+        CacheDeltas { glyphs: advances, spaces: &[] },
+        false,
+    )
+}
+
+/// As [`layout_area_runs_paragraphs_with_advances`], with both sheets of
+/// Photoshop's composed cache (per-glyph and per-space corrections).
+#[allow(clippy::too_many_arguments)]
+pub fn layout_area_runs_paragraphs_with_cache(
+    faces: &FontSet<'_>,
+    text: &str,
+    runs: &[RunStyle],
+    style: &TextStyle,
+    paragraphs: &[ParagraphStyle],
+    width: f32,
+    height: f32,
+    origin: (f32, f32),
+    ascender_ratio: f32,
+    deltas: CacheDeltas<'_>,
+) -> AreaLayout {
+    layout_area_runs_paragraphs_impl(
+        faces,
+        text,
+        runs,
+        style,
+        paragraphs,
+        width,
+        height,
+        origin,
+        ascender_ratio,
+        deltas,
+        false,
+    )
 }
 
 /// As [`layout_area_runs_paragraphs_with_advances`], but with point-text
@@ -420,7 +527,48 @@ pub fn layout_area_runs_paragraphs_point(
     ascender_ratio: f32,
     advances: &[f32],
 ) -> AreaLayout {
-    layout_area_runs_paragraphs_impl(faces, text, runs, style, paragraphs, width, height, origin, ascender_ratio, advances, true)
+    layout_area_runs_paragraphs_impl(
+        faces,
+        text,
+        runs,
+        style,
+        paragraphs,
+        width,
+        height,
+        origin,
+        ascender_ratio,
+        CacheDeltas { glyphs: advances, spaces: &[] },
+        true,
+    )
+}
+
+/// As [`layout_area_runs_paragraphs_point`], with both cache sheets.
+#[allow(clippy::too_many_arguments)]
+pub fn layout_area_runs_paragraphs_point_with_cache(
+    faces: &FontSet<'_>,
+    text: &str,
+    runs: &[RunStyle],
+    style: &TextStyle,
+    paragraphs: &[ParagraphStyle],
+    width: f32,
+    height: f32,
+    origin: (f32, f32),
+    ascender_ratio: f32,
+    deltas: CacheDeltas<'_>,
+) -> AreaLayout {
+    layout_area_runs_paragraphs_impl(
+        faces,
+        text,
+        runs,
+        style,
+        paragraphs,
+        width,
+        height,
+        origin,
+        ascender_ratio,
+        deltas,
+        true,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -434,14 +582,15 @@ fn layout_area_runs_paragraphs_impl(
     height: f32,
     origin: (f32, f32),
     ascender_ratio: f32,
-    advances: &[f32],
+    deltas: CacheDeltas<'_>,
     align_around_origin: bool,
 ) -> AreaLayout {
     let mut paras = Vec::new();
     let mut offset = 0usize;
+    let mut space_offset = 0usize;
     for (i, span) in paragraph_spans(text).into_iter().enumerate() {
         let pstyle = paragraph_style(paragraphs, i);
-        let slice = &text[span.bytes];
+        let slice = &text[span.bytes.clone()];
         let shape_style = TextStyle {
             auto_leading: pstyle.auto_leading,
             ..*style
@@ -453,10 +602,16 @@ fn layout_area_runs_paragraphs_impl(
             let mut shaped = shape_runs_attrs(faces, slice, &sub, &shape_style);
             for (_, attr) in &mut shaped {
                 attr.run = map[attr.run];
+                // Shaping saw the paragraph's own slice; the line ranges must
+                // index the layer text, so lift the source range.
+                attr.source = (
+                    attr.source.0 + span.bytes.start,
+                    attr.source.1 + span.bytes.start,
+                );
             }
             shaped
         };
-        apply_advances(&mut items, advances, offset, |g, attrs| {
+        apply_advances(&mut items, deltas.glyphs, offset, |g, attrs| {
             let run = runs.get(attrs.run);
             let size = run.and_then(|r| r.size).unwrap_or(style.size);
             let hscale = run.and_then(|r| r.horizontal_scale).unwrap_or(1.0);
@@ -467,6 +622,7 @@ fn layout_area_runs_paragraphs_impl(
             tracking
         });
         offset += items.len();
+        apply_word_spacing(&mut items, deltas.spaces, &mut space_offset);
         let mut soft = vec![None; items.len() + 1];
         if pstyle.hyphenate {
             let hyphen = |attr: &GlyphAttrs| {
@@ -481,6 +637,7 @@ fn layout_area_runs_paragraphs_impl(
         }
         paras.push(Para {
             items,
+            span: (span.bytes.start, span.bytes.end),
             soft,
             style: pstyle,
         });
@@ -492,7 +649,7 @@ fn layout_area_runs_paragraphs_impl(
         height,
         origin,
         ascender_ratio,
-        advances.is_empty(),
+        deltas.is_empty(),
         align_around_origin,
     )
 }
@@ -555,6 +712,27 @@ fn apply_advances(
             };
             g.advance = (base - tracking(g, attrs)).max(0.0) + *d;
         }
+    }
+}
+
+/// Applies Photoshop's every-line-composer word-spacing corrections.
+///
+/// `deltas` holds one value per word space of the whole text, in text order;
+/// `offset` tracks the spaces consumed by earlier paragraphs. Spaces the
+/// composer leaves alone (and text after the list) keep their advance, so an
+/// empty or short list is safe.
+fn apply_word_spacing(items: &mut [(GlyphPos, GlyphAttrs)], deltas: &[f32], offset: &mut usize) {
+    if deltas.is_empty() {
+        return;
+    }
+    for (glyph, _) in items.iter_mut() {
+        if glyph.ch != ' ' {
+            continue;
+        }
+        if let Some(delta) = deltas.get(*offset) {
+            glyph.advance = (glyph.advance + *delta).max(0.0);
+        }
+        *offset += 1;
     }
 }
 
@@ -773,6 +951,8 @@ fn apply_every_line_tracking(items: &mut [(GlyphPos, GlyphAttrs)], size: f32) {
 /// Shared inputs of [`place_line`].
 struct Ctx<'a> {
     para: &'a ParagraphStyle,
+    /// Index of the paragraph being placed, in text order.
+    paragraph: usize,
     breaker: &'a Breaker,
     origin_x: f32,
 }
@@ -831,6 +1011,14 @@ fn layout_paragraphs(
         prev = Some(pstyle);
         if para.items.is_empty() {
             let lead = style.size * pstyle.auto_leading;
+            out.empty.push(EmptyParagraph {
+                paragraph: pi,
+                range_start: para.span.0,
+                range_end: para.span.1,
+                baseline,
+                x: origin.0 + pstyle.start_indent + pstyle.first_line_indent,
+                leading: lead,
+            });
             baseline -= lead;
             from_top += lead;
             continue;
@@ -881,12 +1069,22 @@ fn layout_paragraphs(
         );
         let ctx = Ctx {
             para: &pstyle,
+            paragraph: pi,
             breaker: &breaker,
             origin_x: origin.0,
         };
         let mut start = 0;
         for (k, &end) in ends.iter().enumerate() {
-            let line = place_line(&ctx, &pieces, &work, &soft, (start, end), k, baseline, align_around_origin);
+            let line = place_line(
+                &ctx,
+                &pieces,
+                &work,
+                &soft,
+                (start, end),
+                k,
+                baseline,
+                align_around_origin,
+            );
             // Photoshop hides lines whose baseline falls outside the box.
             if from_top <= height {
                 out.lines.push(line);
@@ -1021,11 +1219,19 @@ fn place_line(
         attrs.push(h.attrs);
         pen += h.advance;
     }
+    // The line's source bytes: the glyphs are in text order, so the first
+    // glyph's start and the last glyph's end bound them (a hyphenation hyphen
+    // copies the preceding glyph's range and cannot extend the line).
+    let range_start = attrs.iter().map(|a| a.source.0).min().unwrap_or(0);
+    let range_end = attrs.iter().map(|a| a.source.1).max().unwrap_or(0);
     Line {
         glyphs,
         baseline,
         width: pen - x0,
         attrs,
+        range_start,
+        range_end,
+        paragraph: ctx.paragraph,
     }
 }
 
@@ -1047,8 +1253,10 @@ mod cache_advance_tests {
                 run: 0,
                 color: [0, 0, 0],
                 vertical_scale: 1.0,
+                source: (0, 0),
                 x_scale: 1.0,
                 faux_italic: false,
+                rotate: false,
                 leading: 0.0,
             },
         )
@@ -1058,6 +1266,51 @@ mod cache_advance_tests {
     /// applied to the nominal advance (`nominal_advance + delta`), not on top
     /// of the engine's metrics kerning. Measured on layer `02`: this is what
     /// reproduces Photoshop's stored columns.
+    #[test]
+    fn word_spacing_corrections_move_only_the_spaces() {
+        let mut items = [glyph(10.0, 10.0), glyph(4.0, 4.0), glyph(10.0, 10.0)];
+        items[0].0.ch = 'a';
+        items[1].0.ch = ' ';
+        items[2].0.ch = 'b';
+        let mut offset = 0usize;
+        apply_word_spacing(&mut items, &[-0.5, 1.0], &mut offset);
+        assert!((items[0].0.advance - 10.0).abs() < 1e-6);
+        assert!((items[1].0.advance - 3.5).abs() < 1e-6);
+        assert!((items[2].0.advance - 10.0).abs() < 1e-6);
+        // The text has one space, so one value was consumed.
+        assert_eq!(offset, 1);
+        // The offset keeps counting spaces across paragraphs: the next space
+        // takes the second correction.
+        let mut more = [glyph(4.0, 4.0)];
+        more[0].0.ch = ' ';
+        apply_word_spacing(&mut more, &[-0.5, 1.0], &mut offset);
+        assert!((more[0].0.advance - 5.0).abs() < 1e-6);
+        assert_eq!(offset, 2);
+        // Past the end of the list the spaces keep their advance.
+        let mut after = [glyph(4.0, 4.0)];
+        after[0].0.ch = ' ';
+        apply_word_spacing(&mut after, &[-0.5, 1.0], &mut offset);
+        assert!((after[0].0.advance - 4.0).abs() < 1e-6);
+        assert_eq!(offset, 3);
+        // An empty sheet is a no-op.
+        let mut untouched = [glyph(4.0, 4.0)];
+        untouched[0].0.ch = ' ';
+        let mut zero = 0usize;
+        apply_word_spacing(&mut untouched, &[], &mut zero);
+        assert!((untouched[0].0.advance - 4.0).abs() < 1e-6);
+        assert_eq!(zero, 0);
+    }
+
+    /// The every-line composer's own nudge is skipped when the cache supplies
+    /// word-spacing corrections (the cache carries the real ones).
+    #[test]
+    fn cache_corrections_disable_the_uniform_every_line_nudge() {
+        let deltas = CacheDeltas { glyphs: &[], spaces: &[-0.0468] };
+        assert!(!deltas.is_empty());
+        let empty = CacheDeltas::default();
+        assert!(empty.is_empty());
+    }
+
     #[test]
     fn pair_specific_large_corrections_replace_kerning() {
         let mut items = [glyph(15.574, 16.614)];

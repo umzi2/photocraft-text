@@ -112,7 +112,9 @@ fn optical_kerning_tightens_photoshop_upper_case_diagonals() {
 #[test]
 fn optical_kerning_tightens_what_photoshop_tightens() {
     let face = face("times.ttf");
-    for text in ["as", "sf", "fs", "sa", "af", "oo", "jj", "AV", "AT", "WA", "TO"] {
+    for text in [
+        "as", "sf", "fs", "sa", "af", "oo", "jj", "AV", "AT", "WA", "TO",
+    ] {
         assert!(
             pair(&face, text) < 0.0,
             "{text}: Photoshop tightens this pair"

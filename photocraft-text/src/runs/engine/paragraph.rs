@@ -2,7 +2,6 @@ use crate::area::Justification;
 use crate::engine_data::Value;
 
 use super::super::model::{ParagraphFormat, ParagraphRun};
-use super::run_lengths;
 
 /// Writes the paragraph runs (`EngineDict/ParagraphRun`) for `paras`.
 pub fn apply_paragraph_runs(root: &mut Value, paras: &[ParagraphRun]) -> bool {
@@ -86,26 +85,24 @@ fn triple(values: [f32; 3]) -> Value {
     Value::Array(values.iter().map(|v| Value::Float(f64::from(*v))).collect())
 }
 
-/// Paragraph runs of a layer (`EngineDict/ParagraphRun`).
+/// Paragraph runs of a layer (`EngineDict/ParagraphRun`), resolved through the
+/// `ParagraphSheetSet` chain (a run's `Properties` → its named style sheet →
+/// `TheNormalParagraphSheet`).
 pub fn paragraphs_from_engine_data(root: &Value) -> Vec<ParagraphRun> {
-    let Some(para_run) = root.get("EngineDict").and_then(|e| e.get("ParagraphRun")) else {
-        return Vec::new();
-    };
-    let lens = run_lengths(para_run.get("RunLengthArray"));
-    let items = para_run
-        .get("RunArray")
-        .and_then(Value::as_array)
-        .unwrap_or(&[]);
-    items
-        .iter()
-        .zip(lens)
-        .map(|(item, len)| parse_paragraph_run(item, len))
-        .collect()
+    super::parse::resolved_paragraphs(root)
 }
 
-fn parse_paragraph_run(item: &Value, len: usize) -> ParagraphRun {
-    let props = item.get("ParagraphSheet").and_then(|s| s.get("Properties"));
-    let get = |key: &str| props.and_then(|d| d.get(key));
+/// One paragraph run from its own `Properties` and its inherited ones.
+pub(super) fn parse_paragraph_run(
+    props: Option<&Value>,
+    len: usize,
+    base: &[Option<&Value>],
+) -> ParagraphRun {
+    let get = |key: &str| {
+        props
+            .and_then(|d| d.get(key))
+            .or_else(|| base.iter().flatten().find_map(|b| b.get(key)))
+    };
     let num = |key: &str| get(key).and_then(Value::as_f32).unwrap_or(0.0);
     let triple = |key: &str, fallback: [f32; 3]| {
         get(key)
@@ -124,7 +121,16 @@ fn parse_paragraph_run(item: &Value, len: usize) -> ParagraphRun {
         len,
         word_spacing: triple("WordSpacing", [0.8, 1.0, 1.33]),
         letter_spacing: triple("LetterSpacing", [0.0, 0.0, 0.0]),
-        glyph_scaling: triple("GlyphScaling", [1.0, 1.0, 1.0]),
+        // Photoshop's key is `GlyphSpacing` (the writer above writes it); older
+        // EngineData from other writers spells it `GlyphScaling`, so accept both.
+        glyph_scaling: {
+            let spacing = triple("GlyphSpacing", [f32::NAN; 3]);
+            if spacing.iter().all(|v| v.is_finite()) {
+                spacing
+            } else {
+                triple("GlyphScaling", [1.0, 1.0, 1.0])
+            }
+        },
         justification: Justification::from_psd(
             get("Justification").and_then(Value::as_i64).unwrap_or(0) as i32,
         ),

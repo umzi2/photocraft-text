@@ -143,6 +143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 old_style,
                 optical_kerning: optical,
                 advance_deltas: advances,
+                word_spacing_deltas: Vec::new(),
             };
             run_count
         ];
@@ -241,7 +242,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match orientation {
             Orientation::Vertical => {
                 photocraft_text::layer_render::render_vertical_from_engine_data_in_rect(
-                    &store, &ed, &text, origin, target,
+                    &store, &ed, &text, origin, frame.map(|f| (f[2] - f[0], f[3] - f[1])), target,
                 )?
             }
             Orientation::Horizontal => {

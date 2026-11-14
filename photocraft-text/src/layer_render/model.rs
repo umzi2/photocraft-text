@@ -93,4 +93,36 @@ pub struct RunFeatures {
     /// advances instead of its uniform every-line nudge, so line breaking sees
     /// the same widths Photoshop did.
     pub advance_deltas: Vec<f32>,
+    /// Per-space advance corrections in points, one per **word space** of the
+    /// layer text in text order — the every-line composer's word-spacing sheet
+    /// in `Txt2`'s composed cache (`composed_layout(..).deltas()`).
+    ///
+    /// Unlike [`Self::advance_deltas`] these are indexed by space, not by
+    /// glyph, because Photoshop balances a line by moving its spaces: layer
+    /// `05 area indents spacing` records eight `-.0468` corrections on line 1
+    /// and seven `+.0468` on lines 4/5. When non-empty the layout applies them
+    /// to the space glyphs in order and the uniform every-line nudge is
+    /// disabled (the cache carries the real correction). The sheet describes the
+    /// whole text, so only the first populated entry in a feature list is used.
+    pub word_spacing_deltas: Vec<f32>,
+}
+
+impl RunFeatures {
+    /// The composed-cache half of a layer's features, read from its `Txt2`
+    /// block: Photoshop's every-line composer word-spacing corrections, in
+    /// text order (see [`Self::word_spacing_deltas`]).
+    ///
+    /// The caller adds the character-sheet flags it knows (`old_style`,
+    /// `optical_kerning`, `advance_deltas`) on top:
+    ///
+    /// ```ignore
+    /// let features = RunFeatures { optical_kerning, ..RunFeatures::from_composed_cache(txt2, object)? };
+    /// ```
+    pub fn from_composed_cache(block: &[u8], object: usize) -> Result<Self, crate::error::Error> {
+        let layout = crate::txt2::composed_layout(block, object)?;
+        Ok(Self {
+            word_spacing_deltas: layout.deltas(),
+            ..Self::default()
+        })
+    }
 }

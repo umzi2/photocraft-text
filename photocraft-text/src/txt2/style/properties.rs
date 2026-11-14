@@ -57,6 +57,23 @@ pub enum RunProperty {
     Language,
     /// `/6 /52`, boolean: no break (keep the run on one line).
     NoBreak,
+    /// `/6 /20`, boolean: contextual alternates (`calt`; Photoshop's default is
+    /// off, so it also writes an explicit `false`).
+    ContextualLigatures,
+    /// `/6 /23`, boolean: fractions (`frac`).
+    Fractions,
+    /// `/6 /24`, boolean: ordinals (`ordn`).
+    Ordinals,
+    /// `/6 /25`, boolean: swash (`swsh`).
+    Swash,
+    /// `/6 /26`, boolean: titling (`titl`).
+    Titling,
+    /// `/6 /28`, boolean: stylistic alternates (`salt`).
+    StylisticAlternates,
+    /// `/6 /29`, boolean: ornaments (`ornm`).
+    Ornaments,
+    /// `/6 /85`: Stylistic Sets bit mask, bit n selects `ss{n+1}` (n = 0…19).
+    StylisticSets,
     /// `/6 /53`: fill paint (`SimplePaint`, see [`set_run_fill_color`](super::set_run_fill_color)).
     FillPaint,
     /// `/6 /54`: stroke paint (`SimplePaint`).
@@ -77,6 +94,14 @@ impl RunProperty {
             RunProperty::VerticalScale => "7",
             RunProperty::Tracking => "8",
             RunProperty::BaselineShift => "9",
+            RunProperty::ContextualLigatures => "20",
+            RunProperty::Fractions => "23",
+            RunProperty::Ordinals => "24",
+            RunProperty::Swash => "25",
+            RunProperty::Titling => "26",
+            RunProperty::StylisticAlternates => "28",
+            RunProperty::Ornaments => "29",
+            RunProperty::StylisticSets => "85",
             RunProperty::KerningType => "11",
             RunProperty::Capitalization => "12",
             RunProperty::Strikethrough => "15",
@@ -114,6 +139,14 @@ impl RunProperty {
             Self::OldStyle,
             Self::Language,
             Self::NoBreak,
+            Self::ContextualLigatures,
+            Self::Fractions,
+            Self::Ordinals,
+            Self::Swash,
+            Self::Titling,
+            Self::StylisticAlternates,
+            Self::Ornaments,
+            Self::StylisticSets,
             Self::FillPaint,
             Self::StrokePaint,
         ]

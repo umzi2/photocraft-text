@@ -391,8 +391,12 @@ impl TySh {
     /// Sets the antialias mode name (`AntA`), keeping the descriptor's stored form
     /// (four-byte code or string) for the value.
     pub fn set_antialias(&mut self, mode: &str) {
+        // Photoshop stores the four short modes (`Anno`/`AnCr`/`AnSt`/`AnSm`/
+        // `AnSh`) as four-byte codes; the platform and descriptive modes
+        // (`antiAliasPlatformGray`, `antiAliasSharp`, ...) do not fit one and
+        // must stay a string, or the descriptor stores a truncated code.
         let value = match enum_value(self.text_descriptor(), KEY_ANTIALIAS) {
-            Some(Id::Code(_)) => Id::Code(four_byte_code(mode)),
+            Some(Id::Code(_)) if mode.len() == 4 => Id::Code(four_byte_code(mode)),
             _ => Id::new(mode),
         };
         set_enum(self.text_descriptor_mut(), KEY_ANTIALIAS, Id::new("Annt"), value);

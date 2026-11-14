@@ -838,3 +838,6 @@ fn accumulate_edge(acc: &mut [f32], w: usize, h: usize, e: &Edge) {
         x = xnext;
     }
 }
+
+#[cfg(test)]
+mod tests;

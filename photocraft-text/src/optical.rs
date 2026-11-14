@@ -53,6 +53,51 @@ pub fn optical_pair(face: &Face<'_>, a: u16, b: u16, size: f32) -> f32 {
     (OPTICAL_GAP_FACTOR * (target - gap)).clamp(-clamp, clamp) / upm * size
 }
 
+/// Largest correction a class-scaled pair may take, as a fraction of the em.
+///
+/// The fitted [`OPTICAL_CLAMP`] (0.0275 em) suits the lower-case pairs the model was fitted on,
+/// whose Photoshop corrections are small. Photoshop's optical kerning moves upper-case diagonals
+/// and punctuation much further: measured against Photoshop's own recomposition of Myriad Pro at
+/// 48 pt, `AV` is -3 px (-0.0625 em), `AT` -5 px (-0.104 em), `P.` -7 px (-0.146 em) while
+/// `Wa`/`Ve` are -2 px (-0.042 em). This cap leaves room for those classes.
+pub const OPTICAL_MAX: f32 = 0.19;
+
+/// Photoshop's optical class factor for a pair of characters, applied to the fitted model's raw
+/// closure (before its lower-case clamp). Measured against Photoshop's own recomposition of
+/// Myriad Pro at 48 pt (`tests/optical_pairs.rs` pins the values): the raw closure is close to
+/// Photoshop for `T`/`Y` pairs and punctuation, but too strong for `A`/`V` capitals and for `F`
+/// before a round lower-case glyph, and slightly too strong for `W`/`V` before one.
+pub fn optical_class_factor(a: char, b: char) -> f32 {
+    let punctuation = |c: char| matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '"' | '-' | '–' | '—' | '…');
+    let diagonal = |c: char| matches!(c, 'A' | 'V' | 'W' | 'X' | 'K');
+    let round = |c: char| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u' | 'y' | 'c' | 'd' | 'g' | 'q');
+    if punctuation(b) {
+        0.81
+    } else if a == 'F' && round(b) {
+        0.42
+    } else if matches!(a, 'W' | 'V') && round(b) {
+        0.78
+    } else if diagonal(a) && diagonal(b) {
+        0.64
+    } else if matches!(a, 'T' | 'Y') || matches!(b, 'T' | 'Y') {
+        0.95
+    } else {
+        1.0
+    }
+}
+
+/// [`optical_pair`] with Photoshop's class calibration: the fitted model's raw closure, scaled by
+/// [`optical_class_factor`] and capped at [`OPTICAL_MAX`] em. `a`/`b` are the pair's glyph ids and
+/// `ca`/`cb` the characters they came from.
+pub fn optical_pair_chars(face: &Face<'_>, a: u16, b: u16, size: f32, ca: char, cb: char) -> f32 {
+    let upm = face.units_per_em() as f32;
+    let Some(gap) = facing_gap(face, a, b) else {
+        return 0.0;
+    };
+    let closure = OPTICAL_GAP_FACTOR * (OPTICAL_TARGET_GAP * upm - gap) / upm * size;
+    (closure * optical_class_factor(ca, cb)).clamp(-OPTICAL_MAX * size, 0.0)
+}
+
 /// Tightest horizontal ink gap between `a`'s right edge and `b`'s left edge
 /// over the rows the two glyphs share, in font units.
 fn facing_gap(face: &Face<'_>, a: u16, b: u16) -> Option<f32> {
@@ -121,7 +166,12 @@ fn segments(contours: &crate::outline::Contours, dx: f32) -> Vec<Seg> {
     for contour in contours {
         let pts = flatten(contour, FLATTEN_STEPS);
         for w in pts.windows(2) {
-            out.push(Seg { x0: w[0].0 + dx, y0: w[0].1, x1: w[1].0 + dx, y1: w[1].1 });
+            out.push(Seg {
+                x0: w[0].0 + dx,
+                y0: w[0].1,
+                x1: w[1].0 + dx,
+                y1: w[1].1,
+            });
         }
     }
     out

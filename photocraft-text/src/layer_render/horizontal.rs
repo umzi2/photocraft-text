@@ -1,8 +1,8 @@
 //! Horizontal point and area text composition.
 
 use crate::area::{
-    ParagraphStyle, first_baseline_ratio, layout_area, layout_area_runs,
-    layout_area_runs_paragraphs_point, layout_area_runs_paragraphs_with_advances,
+    CacheDeltas, ParagraphStyle, first_baseline_ratio, layout_area, layout_area_runs,
+    layout_area_runs_paragraphs_point_with_cache, layout_area_runs_paragraphs_with_cache,
 };
 use crate::engine_data::Value;
 use crate::error::Error;
@@ -124,7 +124,7 @@ pub fn render_text_layer_with_atlases(
     let style = runs
         .first()
         .map(|r| text_style_of(r, &spec.style))
-        .unwrap_or_else(|| spec.style.clone());
+        .unwrap_or(spec.style);
 
     // The multi-run path carries the per-character attributes (vertical scale,
     // faux italic, caps, colour) into `Line::attrs`; the single-style
@@ -184,27 +184,32 @@ pub fn render_from_engine_data(
     render_from_engine_data_with_paragraphs(store, ed, text, &[], box_size, origin)
 }
 
-/// As [`render_from_engine_data`] with paragraph styles supplied by the caller.
+/// Everything the layout and the rasteriser share for one horizontal layer:
+/// shaped runs, resolved style, placed lines and the antialias mode.
 ///
-/// `paragraphs` are indexed by paragraph in text order (`len` in UTF-16 code
-/// units, paragraph separators included; the last entry repeats). This is the
-/// entry point for a document model that keeps paragraph sheets outside
-/// `EngineData`; passing an empty slice falls back to the layer's own sheets.
-///
-/// Returns the ink-cropped RGBA surface and its offset from the text origin
-/// (`LayerPixels::offset`, measured from the first baseline vertically), the
-/// same contract as [`render_from_engine_data`].
-pub(super) fn render_impl(
-    store: &FaceStore,
+/// [`render_impl`] paints [`Prepared::lines`]; `layout_from_engine_data*`
+/// describes them. Both call [`prepare_impl`], so a caret cannot drift from the
+/// pixels.
+pub(super) struct Prepared<'a> {
+    pub(super) faces: FontSet<'a>,
+    pub(super) style_runs: Vec<RunStyle>,
+    pub(super) spec: LayerTextStyle,
+    pub(super) lines: Vec<crate::area::Line>,
+    pub(super) empty: Vec<crate::area::EmptyParagraph>,
+    pub(super) aa: crate::raster::AntiAlias,
+}
+
+/// Lays a layer out (shape, break, justify, place) without rasterising it.
+#[allow(clippy::too_many_arguments)]
+fn prepare_impl<'a>(
+    store: &'a FaceStore,
     ed: &Value,
     text: &str,
     paragraphs: &[runs::ParagraphRun],
     features: &[RunFeatures],
     box_size: (f32, f32),
     origin: (f32, f32),
-    target: Option<RectTarget>,
-    warp: Option<&WarpDraw<'_>>,
-) -> Result<LayerPixels, Error> {
+) -> Result<Prepared<'a>, Error> {
     let mut style_runs = runs::from_engine_data(ed);
     for (i, f) in features.iter().enumerate() {
         if let Some(run) = style_runs.get_mut(i) {
@@ -254,6 +259,14 @@ pub(super) fn render_impl(
         .iter()
         .flat_map(|f| f.advance_deltas.iter().copied())
         .collect();
+    // The word-spacing sheet is per text, not per run: the first populated
+    // entry carries it (see `RunFeatures::word_spacing_deltas`).
+    let word_spacing_deltas: Vec<f32> = features
+        .iter()
+        .map(|f| f.word_spacing_deltas.as_slice())
+        .find(|deltas| !deltas.is_empty())
+        .unwrap_or_default()
+        .to_vec();
     // Point text has no frame: measure it unwrapped and size the canvas to the
     // laid-out lines instead of to the layer's old ink rectangle. Its lines
     // align against the type origin, not against the widest line.
@@ -264,7 +277,7 @@ pub(super) fn render_impl(
         // Measure flush left: alignment against a 1e7 pt frame would push a
         // centred line millions of points right and the canvas could not hold it.
         let probe_styles = probe_paragraphs(&paras);
-        let probe = layout_area_runs_paragraphs_with_advances(
+        let probe = layout_area_runs_paragraphs_with_cache(
             &faces,
             text,
             &style_runs,
@@ -274,7 +287,10 @@ pub(super) fn render_impl(
             1.0e7,
             origin,
             ascender,
-            &advance_deltas,
+            CacheDeltas {
+                glyphs: &advance_deltas,
+                spaces: &word_spacing_deltas,
+            },
         );
         let width = probe
             .lines
@@ -296,7 +312,7 @@ pub(super) fn render_impl(
     };
 
     let layout = if point_text {
-        layout_area_runs_paragraphs_point(
+        layout_area_runs_paragraphs_point_with_cache(
             &faces,
             text,
             &style_runs,
@@ -306,10 +322,13 @@ pub(super) fn render_impl(
             box_size.1,
             origin,
             ascender,
-            &advance_deltas,
+            CacheDeltas {
+                glyphs: &advance_deltas,
+                spaces: &word_spacing_deltas,
+            },
         )
     } else {
-        layout_area_runs_paragraphs_with_advances(
+        layout_area_runs_paragraphs_with_cache(
             &faces,
             text,
             &style_runs,
@@ -319,7 +338,10 @@ pub(super) fn render_impl(
             box_size.1,
             origin,
             ascender,
-            &advance_deltas,
+            CacheDeltas {
+                glyphs: &advance_deltas,
+                spaces: &word_spacing_deltas,
+            },
         )
     };
     let spec = LayerTextStyle {
@@ -364,16 +386,86 @@ pub(super) fn render_impl(
             }
         }
     }
-    paint(
-        &faces,
-        layout.lines,
-        &style_runs,
-        &spec,
+    Ok(Prepared {
+        faces,
+        style_runs,
+        spec,
+        lines: layout.lines,
+        empty: layout.empty,
         aa,
+    })
+}
+
+/// Rasterises a prepared layout.
+fn render_prepared(
+    prepared: Prepared<'_>,
+    store: &FaceStore,
+    target: Option<RectTarget>,
+    warp: Option<&WarpDraw<'_>>,
+) -> Result<LayerPixels, Error> {
+    paint(
+        &prepared.faces,
+        prepared.lines,
+        &prepared.style_runs,
+        &prepared.spec,
+        prepared.aa,
         store.atlases(),
         target,
         warp,
     )
+}
+
+/// As [`render_from_engine_data`] with paragraph styles supplied by the caller.
+///
+/// `paragraphs` are indexed by paragraph in text order (`len` in UTF-16 code
+/// units, paragraph separators included; the last entry repeats). This is the
+/// entry point for a document model that keeps paragraph sheets outside
+/// `EngineData`; passing an empty slice falls back to the layer's own sheets.
+///
+/// Returns the ink-cropped RGBA surface and its offset from the text origin
+/// (`LayerPixels::offset`, measured from the first baseline vertically), the
+/// same contract as [`render_from_engine_data`].
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_impl(
+    store: &FaceStore,
+    ed: &Value,
+    text: &str,
+    paragraphs: &[runs::ParagraphRun],
+    features: &[RunFeatures],
+    box_size: (f32, f32),
+    origin: (f32, f32),
+    target: Option<RectTarget>,
+    warp: Option<&WarpDraw<'_>>,
+) -> Result<LayerPixels, Error> {
+    let prepared = prepare_impl(store, ed, text, paragraphs, features, box_size, origin)?;
+    render_prepared(prepared, store, target, warp)
+}
+
+/// Lays a layer out with the render entry points' arguments and returns the
+/// layout it would rasterise.
+#[allow(clippy::too_many_arguments)]
+fn layout_impl(
+    store: &FaceStore,
+    ed: &Value,
+    text: &str,
+    paragraphs: &[runs::ParagraphRun],
+    features: &[RunFeatures],
+    box_size: (f32, f32),
+    origin: (f32, f32),
+    target: Option<RectTarget>,
+) -> Result<super::layout::TextLayout, Error> {
+    let prepared = prepare_impl(store, ed, text, paragraphs, features, box_size, origin)?;
+    // The document position of a point is the anchor plus the layout position,
+    // with the same fold the rasteriser applies: the canvas column is
+    // `target.origin + target.anchor - origin + pen`.
+    let anchor = match target {
+        Some(t) => (
+            t.origin.0 as f32 + t.anchor.0 - origin.0,
+            t.origin.1 as f32 + t.anchor.1 - origin.1,
+        ),
+        None => (0.0, 0.0),
+    };
+    Ok(super::layout::layout_of(&prepared, text, anchor))
 }
 
 /// As [`render_from_engine_data`] with paragraph styles supplied by the caller.
@@ -458,6 +550,7 @@ pub fn render_from_engine_data_with_paragraphs_and_features(
 
 /// As [`render_from_engine_data_in_rect`], with the `Txt2`-only character
 /// features of [`render_from_engine_data_with_paragraphs_and_features`].
+#[allow(clippy::too_many_arguments)]
 pub fn render_from_engine_data_in_rect_with_features(
     store: &FaceStore,
     ed: &Value,
@@ -478,5 +571,101 @@ pub fn render_from_engine_data_in_rect_with_features(
         origin,
         Some(target),
         None,
+    )
+}
+
+/// Lays a layer out straight from its `EngineData`, without rasterising it.
+///
+/// This is [`render_from_engine_data`] with the rasteriser stopped: the same
+/// shaping, breaking, justification, indents and leading, so the glyph pens,
+/// line boxes and caret stops returned here are exactly what the pixels show.
+/// [`super::layout::TextLayout`] documents the coordinate space.
+pub fn layout_from_engine_data(
+    store: &FaceStore,
+    ed: &Value,
+    text: &str,
+    box_size: (f32, f32),
+    origin: (f32, f32),
+) -> Result<super::layout::TextLayout, Error> {
+    layout_impl(store, ed, text, &[], &[], box_size, origin, None)
+}
+
+/// As [`layout_from_engine_data`] with paragraph styles supplied by the caller
+/// (the mirror of [`render_from_engine_data_with_paragraphs`]).
+pub fn layout_from_engine_data_with_paragraphs(
+    store: &FaceStore,
+    ed: &Value,
+    text: &str,
+    paragraphs: &[runs::ParagraphRun],
+    box_size: (f32, f32),
+    origin: (f32, f32),
+) -> Result<super::layout::TextLayout, Error> {
+    layout_impl(store, ed, text, paragraphs, &[], box_size, origin, None)
+}
+
+/// As [`layout_from_engine_data_with_paragraphs`], with the `Txt2`-only
+/// character features of [`render_from_engine_data_with_paragraphs_and_features`].
+pub fn layout_from_engine_data_with_paragraphs_and_features(
+    store: &FaceStore,
+    ed: &Value,
+    text: &str,
+    paragraphs: &[runs::ParagraphRun],
+    features: &[RunFeatures],
+    box_size: (f32, f32),
+    origin: (f32, f32),
+) -> Result<super::layout::TextLayout, Error> {
+    layout_impl(
+        store, ed, text, paragraphs, features, box_size, origin, None,
+    )
+}
+
+/// As [`layout_from_engine_data`], reporting positions in document space: the
+/// layout is the one [`render_from_engine_data_in_rect`] rasterises, and
+/// `TextLayout::anchor` is `target.anchor`, so the document position of a point
+/// is `anchor + (x, y)`.
+#[allow(clippy::too_many_arguments)]
+pub fn layout_from_engine_data_in_rect(
+    store: &FaceStore,
+    ed: &Value,
+    text: &str,
+    paragraphs: &[runs::ParagraphRun],
+    box_size: (f32, f32),
+    origin: (f32, f32),
+    target: RectTarget,
+) -> Result<super::layout::TextLayout, Error> {
+    layout_impl(
+        store,
+        ed,
+        text,
+        paragraphs,
+        &[],
+        box_size,
+        origin,
+        Some(target),
+    )
+}
+
+/// As [`layout_from_engine_data_in_rect`], with the `Txt2`-only character
+/// features of [`render_from_engine_data_in_rect_with_features`].
+#[allow(clippy::too_many_arguments)]
+pub fn layout_from_engine_data_in_rect_with_features(
+    store: &FaceStore,
+    ed: &Value,
+    text: &str,
+    paragraphs: &[runs::ParagraphRun],
+    features: &[RunFeatures],
+    box_size: (f32, f32),
+    origin: (f32, f32),
+    target: RectTarget,
+) -> Result<super::layout::TextLayout, Error> {
+    layout_impl(
+        store,
+        ed,
+        text,
+        paragraphs,
+        features,
+        box_size,
+        origin,
+        Some(target),
     )
 }

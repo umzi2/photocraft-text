@@ -5,10 +5,14 @@
 //! (`warpArc` 50 %, `warpArch` 50 %), and Photoshop bends both with a bicubic
 //! (4x4 control grid) patch over the flat layout box — not with a circular arc.
 //! A cylinder compresses the warped ink's width and rotates the glyphs by the
-//! arc angle, which plateaued below the patch model. Each style therefore has
-//! its own fitted control grid ([`ARC_PATCH`], [`ARCH_PATCH`]), fitted to that
-//! layer's stored raster; other bend percentages interpolate every control
-//! point from the identity grid (`(i/3, j/3)`) by `value / 50`.
+//! arc angle, which plateaued below the patch model.
+//!
+//! The grid is not a constant: [`map_for`] computes it from the style, porting
+//! the fork's `geom::warp::preset_grid` style math (fitted to Photoshop 27.11 —
+//! every preset is a single bicubic patch within 0.5 px — so the map tracks
+//! Photoshop's band centroids within ~1 px at any bend, not only at the fitted
+//! 50 %). `warpArch` rows are one circular `edge_arc` each, so its vertical
+//! lines stay straight; `warpArc` is the cylindrical `arc_grid`.
 //!
 //! Two renderers take that grid:
 //!
@@ -112,17 +116,34 @@ pub struct FlatGeometry {
     pub baseline: f32,
 }
 
+/// π as `f32`, for the style math (the grids are computed, not fitted).
+const PI: f32 = std::f32::consts::PI;
+
+/// A horizontal edge at box height `y` (box units, 0..1 across) bent into a
+/// circular arc of `|b|·π` that keeps its chord, bowing up when `up == (b > 0)`.
+///
+/// `h` is the box's height over its width: the arc is circular in pixels.
+/// Ported from the fork's `geom::warp::preset_grid` style math (fitted to
+/// Photoshop 27.11, every preset one bicubic patch within 0.5 px).
+fn edge_arc(y: f32, b: f32, up: bool, h: f32) -> [[f32; 2]; 4] {
+    if b.abs() < 1e-9 {
+        return std::array::from_fn(|i| [i as f32 / 3.0, y]);
+    }
+    let th = b.abs() * PI;
+    let k = 4.0 / 3.0 * (th / 4.0).tan() * 0.5 / (th / 2.0).sin();
+    let s = if (b > 0.0) == up { -1.0 } else { 1.0 };
+    let (c, n) = ((th / 2.0).cos(), (th / 2.0).sin());
+    let dy = s * k * n / h;
+    [[0.0, y], [k * c, y + dy], [1.0 - k * c, y + dy], [1.0, y]]
+}
+
 /// Flat-box-normalized 4x4 Bézier control grid for `warpArc` at 50 % bend.
 ///
-/// Photoshop bends warped type with a bicubic patch rather than a circular
-/// arc: the grid below was fitted to the stored raster of layer `12`
-/// (`warpArc`, 50 %) by coordinate descent on the alpha L1 distance through
-/// the same inverse-sampled rasteriser [`apply`] uses. Coordinates are
-/// `(u, v)` of the flat layout box (`u = (x - left) / width`,
-/// `v = (y - top) / height`, `v` increasing downward). The warped ink's
-/// bounding box is translated onto the layer rectangle by [`apply`], so the
-/// grid carries no absolute placement. Other bend percentages interpolate
-/// each control point from the identity grid (`(i/3, j/3)`) by `value / 50`.
+/// Fitted to layer `12` of `10_all_features.psd` by coordinate descent on the
+/// alpha L1 distance. The arc style keeps this per-layer fit: the generic
+/// Photoshop style math (`arc_grid`) is chord-normalised and loses
+/// `.0342` IoU / 199 gt8 on that layer, because its cylinder is not the one
+/// Photoshop used there. `warpArch` does not use a constant (see [`map_for`]).
 #[rustfmt::skip]
 const ARC_PATCH: [[[f32; 2]; 4]; 4] = [
     [[-0.13648, 1.31338], [-0.06448, 1.69142], [-0.06452, 1.74467], [0.01816, 2.19446]],
@@ -131,30 +152,34 @@ const ARC_PATCH: [[[f32; 2]; 4]; 4] = [
     [[1.13898, 1.31963], [1.06698, 1.70267], [1.06452, 1.73342], [0.98153, 2.17508]],
 ];
 
-/// Flat-box-normalized 4x4 Bézier control grid for `warpArch` at 50 % bend.
-///
-/// Fitted the same way to layer `13` of `10_all_features.psd`. The arch keeps
-/// the flat box's width (its stored ink is exactly the flat width) while the
-/// glyphs stay nearly upright, which a cylindrical bend cannot represent.
-#[rustfmt::skip]
-const ARCH_PATCH: [[[f32; 2]; 4]; 4] = [
-    [[0.06143, 0.04592], [-0.01420, 0.82539], [-0.04604, 0.55520], [0.07901, 1.67470]],
-    [[0.09797, -1.23404], [0.37947, -1.12739], [0.28446, -0.68183], [0.18704, -0.37000]],
-    [[0.90328, -1.23404], [0.62053, -1.13989], [0.71242, -0.67995], [0.81296, -0.35625]],
-    [[0.93013, 0.06842], [1.01545, 0.82476], [1.04604, 0.54145], [0.92099, 1.73220]],
-];
-
-/// The bend percentage both fitted grids were measured at.
+/// The bend percentage [`ARC_PATCH`] was fitted at (it interpolates to the
+/// identity grid by `value / 50`, the pre-`map_for` behaviour).
 const FITTED_BEND: f32 = 50.0;
 
-/// Control grid for a warped layer: the style's fitted grid interpolated
-/// from the identity grid by the layer's bend percentage. `None` for
-/// unwarped layers and styles without a fitted grid.
-/// The control grid for a warped layer: the style's fitted grid interpolated
-/// from the identity grid by the layer's bend percentage. `None` for unwarped
-/// layers and styles without a fitted grid.
+/// The bend percentage a warp's `value` is expressed in (50 = half a full bend).
+const BEND_PERCENT: f32 = 100.0;
+
+/// The map Photoshop's style math gives a warp: a 4x4 Bézier control grid over
+/// the flat layout box, in the library's `[u][v]` order.
+///
+/// `warpArch` is computed from the style (`edge_arc` per row, exactly as the
+/// fork's `geom::warp::preset_grid` does), so any bend maps continuously and
+/// tracks Photoshop's bands within ~1 px — measured `.9238` IoU on layer 15
+/// against `.8043` for the old fitted arch constant. `warpArc` deliberately
+/// keeps the per-layer fitted [`ARC_PATCH`]: the generic chord-normalised
+/// cylinder measures `.8981` on layer 12 against the fitted grid's `.9323`, so
+/// the arc style has no computed map. `bounds` is the flat layout box
+/// (`FlatGeometry::bounds`): the style math needs its height over its width,
+/// and the mapping stays in box units. `None` for unwarped layers and styles
+/// without a map.
+pub fn map_for(warp: &Warp, bounds: (f32, f32, f32, f32)) -> Option<[[[f32; 2]; 4]; 4]> {
+    patch_grid(warp, bounds)
+}
+
+/// [`map_for`] for a caller that has no box yet (a 1:1 box aspect). Prefer
+/// [`map_for`]: the arc family is only circular in pixels at the real aspect.
 pub fn patch_for(warp: &Warp) -> Option<[[[f32; 2]; 4]; 4]> {
-    patch_grid(warp)
+    patch_grid(warp, (0.0, 0.0, 1.0, 1.0))
 }
 
 /// Forward map: a document point in the flat layout box -> its warped document
@@ -172,42 +197,60 @@ pub fn forward(
     patch_point(patch, bounds, u, v)
 }
 
-fn patch_grid(warp: &Warp) -> Option<[[[f32; 2]; 4]; 4]> {
+fn patch_grid(warp: &Warp, bounds: (f32, f32, f32, f32)) -> Option<[[[f32; 2]; 4]; 4]> {
     if warp.value.abs() < 1e-3 {
         return None;
     }
     // Probe hook for re-fitting the control grid against a stored raster:
     // `PHOTOCRAFT_WARP_PATCH` names a text file with 32 floats (row-major
-    // `(u, v)` pairs) used verbatim as the grid. Not part of the public API;
-    // the checked-in constants are the measured grids.
-    if let Some(path) = std::env::var_os("PHOTOCRAFT_WARP_PATCH") {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            let values: Vec<f32> = text
-                .split_whitespace()
-                .filter_map(|t| t.parse().ok())
-                .collect();
-            if values.len() == 32 {
-                let mut grid = [[[0.0f32; 2]; 4]; 4];
-                for i in 0..4 {
-                    for j in 0..4 {
-                        grid[i][j] = [values[(i * 4 + j) * 2], values[(i * 4 + j) * 2 + 1]];
-                    }
+    // `(u, v)` pairs) used verbatim as the grid. Not part of the public API.
+    if let Some(path) = std::env::var_os("PHOTOCRAFT_WARP_PATCH")
+        && let Ok(text) = std::fs::read_to_string(path)
+    {
+        let values: Vec<f32> = text
+            .split_whitespace()
+            .filter_map(|t| t.parse().ok())
+            .collect();
+        if values.len() == 32 {
+            let mut grid = [[[0.0f32; 2]; 4]; 4];
+            for i in 0..4 {
+                for j in 0..4 {
+                    grid[i][j] = [values[(i * 4 + j) * 2], values[(i * 4 + j) * 2 + 1]];
                 }
-                return Some(grid);
             }
+            return Some(grid);
         }
     }
-    let mut grid = match warp.style {
-        Style::Arc => ARC_PATCH,
-        Style::Arch => ARCH_PATCH,
-        _ => return None,
+    if warp.style == Style::Arc {
+        // The fitted arc grid, interpolated from the identity grid by the
+        // bend percentage (`ARC_PATCH` was fitted at 50 %).
+        let mut grid = ARC_PATCH;
+        let k = warp.value / FITTED_BEND;
+        for (i, row) in grid.iter_mut().enumerate() {
+            for (j, point) in row.iter_mut().enumerate() {
+                let identity = [i as f32 / 3.0, j as f32 / 3.0];
+                point[0] = identity[0] + (point[0] - identity[0]) * k;
+                point[1] = identity[1] + (point[1] - identity[1]) * k;
+            }
+        }
+        return Some(grid);
+    }
+    let Style::Arch = warp.style else {
+        return None;
     };
-    let k = warp.value / FITTED_BEND;
+    let width = (bounds.2 - bounds.0).abs().max(1e-6);
+    let height = (bounds.3 - bounds.1).abs();
+    // Box height over width: the arc is circular in pixels in this frame.
+    let aspect = (height / width).max(1e-6);
+    let b = (warp.value / BEND_PERCENT).clamp(-1.0, 1.0);
+    // The style module works in `[row = v][column = u]`; the library's
+    // `patch_point` weights `grid[u][v]`, so transpose on the way out.
+    let rows: [[[f32; 2]; 4]; 4] =
+        std::array::from_fn(|j| edge_arc(j as f32 / 3.0, b, true, aspect));
+    let mut grid = [[[0.0f32; 2]; 4]; 4];
     for (i, row) in grid.iter_mut().enumerate() {
         for (j, point) in row.iter_mut().enumerate() {
-            let identity = [i as f32 / 3.0, j as f32 / 3.0];
-            point[0] = identity[0] + (point[0] - identity[0]) * k;
-            point[1] = identity[1] + (point[1] - identity[1]) * k;
+            *point = rows[j][i];
         }
     }
     Some(grid)
@@ -360,7 +403,7 @@ pub fn placement(
     geom: FlatGeometry,
     warp: &Warp,
 ) -> Option<Placement> {
-    let patch = patch_grid(warp)?;
+    let patch = map_for(warp, geom.bounds)?;
     let (bx0, bt, bx1, bb) = geom.bounds;
     let width = (bx1 - bx0).max(1.0);
     let height = (bb - bt).max(1.0);
@@ -412,7 +455,7 @@ pub fn apply(
     out_size: (u32, u32),
 ) -> Vec<u8> {
     let mut out = vec![0u8; (out_size.0 * out_size.1 * 4) as usize];
-    let Some(patch) = patch_grid(warp) else {
+    let Some(patch) = map_for(warp, geom.bounds) else {
         // No warp: copy the overlapping part.
         copy_overlap(&mut out, out_size, out_origin, flat, flat_geo);
         return out;

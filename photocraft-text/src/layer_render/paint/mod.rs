@@ -44,6 +44,16 @@ struct WarpedGlyph {
     color: [u8; 3],
 }
 
+/// A vertical roman glyph drawn turned 90° clockwise in its em column
+/// (`BaselineDirection 2`), with the contours already turned so the plain
+/// contour rasteriser can draw them.
+struct RotatedGlyph {
+    contours: crate::outline::Contours,
+    x: f32,
+    baseline: f32,
+    color: [u8; 3],
+}
+
 /// One warped decoration rule (underline/strikeout) collected by [`paint`].
 struct WarpedRule {
     x0: f32,
@@ -197,6 +207,7 @@ pub(super) fn paint(
     // Warped drawing is deferred: the canvas must be anchored on the warped
     // ink's own bounding box (Photoshop's layer rectangle *is* that box), so
     // every outline point has to be mapped once before the first fill.
+    let mut rotated_glyphs: Vec<RotatedGlyph> = Vec::new();
     let mut warped_glyphs: Vec<WarpedGlyph> = Vec::new();
     let mut warped_decos: Vec<WarpedRule> = Vec::new();
 
@@ -239,6 +250,36 @@ pub(super) fn paint(
                 .map(|a| a.color)
                 .or_else(|| run.and_then(|r| r.color))
                 .unwrap_or(spec.color);
+            if attrs.map(|a| a.rotate).unwrap_or(false) && warp.is_none() {
+                let contours = glyph_contours(face, g.gid)?;
+                if contours.is_empty() {
+                    continue;
+                }
+                // Turn the outline 90° clockwise about the pen: a font-unit
+                // point (p.x, p.y) becomes (p.y * sy, -p.x * sx), which the
+                // identity-scaled contour rasteriser then places at the pen.
+                let (sx, sy) = (scale * hscale * x_scale, scale * vscale);
+                let turned = contours
+                    .iter()
+                    .map(|contour| {
+                        contour
+                            .iter()
+                            .map(|p| crate::outline::Point {
+                                x: p.x * 0.0 + p.y * sy,
+                                y: -p.x * sx + p.y * 0.0,
+                                on: p.on,
+                            })
+                            .collect()
+                    })
+                    .collect::<Vec<Vec<crate::outline::Point>>>();
+                rotated_glyphs.push(RotatedGlyph {
+                    contours: turned,
+                    x: col_base + g.x,
+                    baseline: row_base - g.y,
+                    color,
+                });
+                continue;
+            }
             // A captured atlas holds Photoshop's own hinted bitmaps for one
             // font, size and antialias mode; nothing else can be byte-exact.
             let faux_bold = run.map(|r| r.faux_bold).unwrap_or(false);
@@ -431,6 +472,23 @@ pub(super) fn paint(
             }
             start = end;
         }
+    }
+
+    for g in &rotated_glyphs {
+        // The contours are already turned and scaled into font units; the
+        // identity map keeps the flat placement.
+        let identity = |x: f32, y: f32| (x, y);
+        canvas.mask_contours_warped(
+            &g.contours,
+            1.0,
+            1.0,
+            0.0,
+            g.x,
+            g.baseline,
+            &identity,
+            g.color,
+            1.0,
+        );
     }
 
     if let Some(draw) = warp {

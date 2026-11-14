@@ -618,7 +618,9 @@ mod tests {
     fn export_uses_the_preview_store_and_adds_one_terminator() {
         let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/assets");
         let mut store = FaceStore::new();
-        store.load(&assets.join("fonts"), "NotoSans-Regular").unwrap();
+        store
+            .load(&assets.join("fonts"), "NotoSans-Regular")
+            .unwrap();
         let bytes = export_psd(
             &store,
             &assets.join("inputs/plain_latin.bin"),
@@ -626,9 +628,14 @@ mod tests {
         )
         .unwrap();
         let file = photocraft_psd::PsdFile::from_bytes(&bytes).unwrap();
-        let tysh = file.layers().iter().find_map(|layer| layer.block(b"TySh")).unwrap();
+        let tysh = file
+            .layers()
+            .iter()
+            .find_map(|layer| layer.block(b"TySh"))
+            .unwrap();
         let (descriptor, _) =
-            photocraft_psd::descriptor::VersionedDescriptor::parse_prefix(&tysh.data[52..]).unwrap();
+            photocraft_psd::descriptor::VersionedDescriptor::parse_prefix(&tysh.data[52..])
+                .unwrap();
         let Some(photocraft_psd::descriptor::Value::RawData(raw)) =
             descriptor.descriptor.get("EngineData")
         else {
@@ -654,7 +661,8 @@ mod tests {
             r#"{{"text":"Hi","runs":[{{"len":{}}},{{"len":1}}]}}"#,
             usize::MAX
         );
-        let error = export_psd(&FaceStore::new(), Path::new("unused"), body.as_bytes()).unwrap_err();
+        let error =
+            export_psd(&FaceStore::new(), Path::new("unused"), body.as_bytes()).unwrap_err();
         assert_eq!(error.to_string(), "run lengths overflow");
     }
 }

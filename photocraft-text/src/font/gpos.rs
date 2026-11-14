@@ -160,9 +160,15 @@ fn collect_kern_lookups(
     for _ in 0..lookup_count {
         offsets.push(ll.u16().ok()? as usize);
     }
+    // One lookup can be named by the `kern` feature of several scripts (MyriadPro-Regular's
+    // GPOS has nine `kern` feature records, all pointing at lookup 1). Kerning is summed over
+    // lookups, so the same lookup must not be applied once per script: `AV` at 48 pt came out
+    // 9 x too tight (-477 instead of -53 units, i.e. 59 px instead of 206 px for `AVAVAVAV`).
+    let mut seen = std::collections::HashSet::new();
     Some(
         lookups
             .into_iter()
+            .filter(|i| seen.insert(*i))
             .filter_map(|i| offsets.get(i).map(|o| lookup_list + o))
             .collect(),
     )

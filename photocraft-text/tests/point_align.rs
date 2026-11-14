@@ -65,9 +65,15 @@ fn ink_interval(justification: Justification) -> (f32, f32) {
         justification,
         ..ParagraphRun::default()
     }];
-    let px: LayerPixels =
-        render_from_engine_data_with_paragraphs(&store(), &ed, text, &paragraphs, (0.0, 0.0), (0.0, 0.0))
-            .expect("render");
+    let px: LayerPixels = render_from_engine_data_with_paragraphs(
+        &store(),
+        &ed,
+        text,
+        &paragraphs,
+        (0.0, 0.0),
+        (0.0, 0.0),
+    )
+    .expect("render");
     assert!(px.width > 0, "no ink; the font store is empty");
     (px.offset.0, px.offset.0 + px.width as f32)
 }
@@ -101,8 +107,14 @@ fn point_text_alignment_turns_lines_around_the_origin() {
 
     // All three carry the same glyphs, so they differ only by the alignment
     // shift: half the width for centre, the whole width for right.
-    assert!((width - (center_x1 - center_x0)).abs() <= 1.0, "centre ink width {width}");
-    assert!((width - (right_x1 - right_x0)).abs() <= 1.5, "right ink width {width}");
+    assert!(
+        (width - (center_x1 - center_x0)).abs() <= 1.0,
+        "centre ink width {width}"
+    );
+    assert!(
+        (width - (right_x1 - right_x0)).abs() <= 1.5,
+        "right ink width {width}"
+    );
     assert!(
         (left_x0 - center_x0 - width / 2.0).abs() <= 3.0,
         "centre shift {} != width/2 {width}",

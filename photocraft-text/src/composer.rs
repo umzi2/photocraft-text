@@ -14,6 +14,20 @@ use crate::typography::{is_left_hang, is_right_hang, kinsoku, left_hang_fit, rig
 /// Cost of a line at ratio 1 (`B = 100`).
 const FLAG_COST: f64 = 1e6;
 const FIT_EPS: f64 = 1e-4;
+/// Photoshop's fit tolerance in points: a line whose natural width overruns the
+/// measure by less than one point still fits.
+///
+/// Measured against Photoshop's own composed caches (`out/check/` fixtures
+/// `fit_{479,480,481}.psd`, `psx_recompose`/`set_width` on the showcase, then
+/// `txt2::composed_layout`): the same 56-glyph first line is kept at measures
+/// 425, 426 and 427 pt although the breaker's natural width for it is 427.30 pt,
+/// i.e. an overrun of 2.30, 1.30 and 0.30 pt. Photoshop then applies its
+/// word-space corrections (`Txt2` `/3`) so the composed line lands within a
+/// point of the measure (425.15, 426.93, 427.96 pt). An exact fit breaks that
+/// line after 47 glyphs at box 480, contradicting every recomposed cache; 2.5 pt
+/// is the smallest constant that reproduces Photoshop's break at all three
+/// measures.
+const FIT_SLACK: f64 = 2.5;
 /// Caps the ratio so cubic costs stay finite for unstretchable lines.
 const MAX_RATIO: f64 = 1e3;
 
@@ -210,7 +224,10 @@ impl Breaker {
         let a = self.avail_for(line);
         let ext = self.extent(p, start, end);
         let slack = a - ext.width;
-        let badness = if slack >= 0.0 {
+        // Photoshop keeps a line that overruns the measure by less than
+        // [`FIT_SLACK`]; such a line costs as if it ended exactly at the
+        // measure (its word-space corrections then close the gap).
+        let badness = if slack >= -FIT_SLACK {
             if last {
                 0.0
             } else {
@@ -219,7 +236,7 @@ impl Breaker {
                 } else {
                     a
                 };
-                ratio_badness(slack, room)
+                ratio_badness(slack.max(0.0), room)
             }
         } else {
             let shrink = p.shrink_room(ext.start, ext.end);
@@ -313,7 +330,7 @@ impl Breaker {
             let fits = |e: usize| {
                 let ext = self.extent(p, start, e);
                 let a = self.avail_for(line);
-                if ext.width <= a + FIT_EPS {
+                if ext.width <= a + FIT_SLACK + FIT_EPS {
                     return true;
                 }
                 e < n

@@ -226,14 +226,44 @@ impl<'a> Face<'a> {
         crate::outline::glyph_bbox(self, gid).ok().flatten()
     }
 
-    /// Photoshop's area-text first-baseline ratio: the ink `yMax` of U+0064
-    /// `d` divided by `unitsPerEm`.
+    /// Photoshop's area-text first-baseline ratio (the distance from the box
+    /// top to the first baseline, divided by the point size).
     ///
-    /// Falls back to 'b', 'h', 'H' when a face has no `d` (symbol fonts) and
-    /// finally to `hhea.ascender / unitsPerEm`.
+    /// Measured against Photoshop 2026 on synthetic single-glyph box layers
+    /// (`H`, `d`, `h`, `l` at 12-400 pt, box top on an integer pixel, ink
+    /// bounding boxes compared on the rasterized duplicate; see
+    /// `out/verify/text-baseline-offset.md`): Photoshop's ratio is the
+    /// **smallest** of the ink `yMax` of the `H` and `d` reference glyphs,
+    /// per em:
+    ///
+    /// | font | `H` | `d` | Photoshop |
+    /// |---|---|---|---|
+    /// | Times New Roman (`glyf`) | 0.6621 | 0.6943 | 0.662 |
+    /// | CCGrimNGritty (CFF) | 0.800 | 0.781 | 0.780-0.781 |
+    /// | CCMeanwhile (CFF) | 0.8303 | 0.813 | 0.809-0.813 |
+    /// | Vampire95 (`glyf`) | 0.605 | 0.466 | 0.465 |
+    ///
+    /// The old rule was `d`'s ink `yMax` alone, which is the *ink-top* distance
+    /// for a line whose tallest glyph is `d` — that is what the PDF-based
+    /// calibration actually measured, not the box-top distance. It is right for
+    /// fonts where `d` is the shorter reference and wrong where it overshoots
+    /// the cap (Times: `d` 1422 vs `H` 1356 units of 2048, i.e. the box layer
+    /// drawn 1-2 px low at 30-60 pt — the user's "text renders 2 px lower than
+    /// Photoshop").
+    ///
+    /// Falls back to the remaining ascender/cap glyphs (`E`, `I`, `T`, `b`,
+    /// `l`) for faces without `H`/`d` (symbol fonts), and finally to
+    /// `hhea.ascender / unitsPerEm`.
     pub fn ascent_ratio(&self) -> f32 {
         let upm = self.head.units_per_em as f32;
-        for ch in ['d', 'b', 'h', 'H'] {
+        // Only the two reference glyphs are used. The declared `OS/2.sCapHeight`
+        // is deliberately not consulted: `v_CCWildButNotCrazy` declares 0.700
+        // while Photoshop's overlay sweep matches `d`'s 0.772, so the declared
+        // cap height is not what the engine uses.
+        let mut best: Option<f32> = None;
+        let mut reference = false;
+        for ch in ['H', 'd', 'E', 'I', 'T', 'b', 'l'] {
+            let primary = matches!(ch, 'H' | 'd');
             let Some(gid) = self.glyph_index(ch) else {
                 continue;
             };
@@ -242,10 +272,18 @@ impl<'a> Face<'a> {
             };
             let ratio = y_max / upm;
             if ratio.is_finite() && ratio > 0.0 {
-                return ratio;
+                if primary {
+                    reference = true;
+                    best = Some(best.map_or(ratio, |b: f32| b.min(ratio)));
+                } else if !reference {
+                    // Only faces without both reference glyphs fall back to a
+                    // different ascender letter; a shorter `T`/`E` must not
+                    // override the cap the reference glyphs give.
+                    best = Some(best.map_or(ratio, |b: f32| b.min(ratio)));
+                }
             }
         }
-        self.hhea.ascender as f32 / upm
+        best.unwrap_or(self.hhea.ascender as f32 / upm)
     }
 
     fn read_hmtx(data: &[u8], num_h_metrics: u16, num_glyphs: u16) -> Result<(Vec<u16>, Vec<i16>)> {
@@ -386,22 +424,33 @@ fn parse_os2(data: &[u8]) -> Os2 {
     };
     let Ok(version) = r.u16() else { return os2 };
     os2.version = version;
-    let _ = r.skip(60);
+    // The table's fixed offsets (OpenType `OS/2`, v0-v5):
+    // 2 xAvgCharWidth, 4 usWeightClass, 6 usWidthClass, 8 fsType,
+    // 62 fsSelection, 64 usFirstCharIndex, 66 usLastCharIndex,
+    // 68 sTypoAscender, 70 sTypoDescender, 72 sTypoLineGap,
+    // 74 usWinAscent, 76 usWinDescent, 78/82 ulCodePageRange1/2 (v1+),
+    // 86 sxHeight, 88 sCapHeight (v2+).
+    if r.seek(4).is_err() {
+        return os2;
+    }
     os2.weight_class = r.u16().unwrap_or(400);
     os2.width_class = r.u16().unwrap_or(5);
-    let _ = r.skip(22);
+    if r.seek(62).is_err() {
+        return os2;
+    }
     os2.fs_selection = r.u16().unwrap_or(0);
-    let _ = r.skip(6);
+    if r.seek(68).is_err() {
+        return os2;
+    }
     os2.s_typo_ascender = r.i16().unwrap_or(0);
     os2.s_typo_descender = r.i16().unwrap_or(0);
     os2.s_typo_line_gap = r.i16().unwrap_or(0);
-    let _ = r.skip(22);
-    if version >= 1 {
-        let _ = r.skip(4);
-        os2.s_cap_height = r.i16().ok();
-    }
     if version >= 2 {
+        if r.seek(86).is_err() {
+            return os2;
+        }
         os2.s_x_height = r.i16().ok();
+        os2.s_cap_height = r.i16().ok();
     }
     os2
 }

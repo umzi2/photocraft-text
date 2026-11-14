@@ -1,5 +1,16 @@
 use std::collections::BTreeMap;
 
+/// One OpenType feature setting on a character run: `tag` is the four-byte
+/// feature tag (`"calt"`, `"onum"`, `"ss01"`), `value` the selector amount
+/// (`0` off, `1` on; Photoshop stores only those). */
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct RunFeature {
+    #[serde(default)]
+    pub tag: String,
+    #[serde(default)]
+    pub value: u16,
+}
+
 use crate::area::Justification;
 use crate::engine_data::Value;
 use crate::font::Face;
@@ -51,6 +62,16 @@ pub struct RunStyle {
     pub language: Option<i64>,
     /// `NoBreak`: keep the run on one line.
     pub no_break: Option<bool>,
+    /// `FontBaseline`: 0 normal, 1 superscript, 2 subscript. The renderer
+    /// draws scripts at 58.3 % of the size, raised/lowered by 33.3 % of it
+    /// (Photoshop's `SuperscriptSize`/`SuperscriptPosition` text resources).
+    pub baseline: Option<i64>,
+    /// `BaselineDirection == 2`: vertical type's roman text rotates 90°
+    /// clockwise along the column instead of standing upright one per em.
+    pub rotate_roman: Option<bool>,
+    /// OpenType features beyond `liga`/`dlig` (`calt`, `onum`, `ss01`, …),
+    /// mostly from `Txt2`; applied in that order after the ligature pass.
+    pub features: Vec<RunFeature>,
     pub sheet: Option<Value>,
 }
 
@@ -208,6 +229,16 @@ pub struct GlyphAttrs {
     pub faux_italic: bool,
     /// This run's line advance in points (`Leading`, or 1.2 x size).
     pub leading: f32,
+    /// Vertical type's rotated roman text (`BaselineDirection 2`): the glyph
+    /// is drawn turned 90° clockwise in its em column instead of upright.
+    pub rotate: bool,
+    /// Byte range of the layer text this glyph was shaped from: half-open
+    /// `(start, end)` in bytes. A ligature covers both components; a
+    /// caps-expanded character covers the one source character; a hyphen the
+    /// layout inserts at a hyphenation point has an empty range at the break
+    /// (it copies the preceding glyph's attributes). The legacy single-style
+    /// path (`crate::area::layout_area` with one face) leaves it at `(0, 0)`.
+    pub source: (usize, usize),
 }
 
 impl RunStyle {

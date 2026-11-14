@@ -1,7 +1,7 @@
 use crate::engine_data::Value;
 
 use super::super::model::RunStyle;
-use super::{CAPS_ALL, CAPS_SMALL, COLOR_TYPE_RGB, color_rgb, engine_language};
+use super::{CAPS_ALL, CAPS_SMALL, COLOR_TYPE_RGB, OPENTYPE_KEYS, color_rgb, engine_language};
 
 /// Writes `styles` back into a layer's `EngineData` so other readers (and our
 /// own renderer) see the same run split Photoshop takes from `Txt2`.
@@ -65,8 +65,20 @@ pub fn apply_style_runs(root: &mut Value, styles: &[RunStyle]) -> bool {
             }
             if let Some(auto) = run.auto_leading_flag() {
                 put("AutoLeading", Value::Bool(auto));
+                if auto {
+                    // Photoshop's own form: with auto leading on, the absolute
+                    // `Leading` field is not the model's leading (Photoshop
+                    // recomputes it); write the neutral 0 so a re-read cannot
+                    // carry a stale `Leading/size` into the model ratio.
+                    put("Leading", Value::Float(0.0));
+                }
             }
-            if let Some(v) = run.leading {
+            // Auto leading owns the field: a `Some` absolute value on an
+            // auto-leading run must not overwrite the neutral 0 (or a re-read
+            // would take it as the model's leading).
+            if let Some(v) = run.leading
+                && run.auto_leading_flag() != Some(true)
+            {
                 put("Leading", Value::Float(f64::from(v)));
             }
             if let Some(auto) = run.auto_kerning {
@@ -101,6 +113,15 @@ pub fn apply_style_runs(root: &mut Value, styles: &[RunStyle]) -> bool {
             if let Some(on) = run.no_break {
                 put("NoBreak", Value::Bool(on));
             }
+            if let Some(code) = run.baseline {
+                put("FontBaseline", Value::Int(code));
+            }
+            if let Some(roman) = run.rotate_roman {
+                // `BaselineDirection` 2 rotates roman text along a vertical
+                // column; 1 stands it upright one character per em.
+                put("BaselineDirection", Value::Int(if roman { 2 } else { 1 }));
+            }
+            put_features(&mut put, &run.features);
             if let Some([r, g, b]) = run.color {
                 // Photoshop stores `[ alpha r g b ]`, alpha first.
                 let values = Value::Array(vec![
@@ -181,9 +202,22 @@ fn sheet_for(run: &RunStyle) -> Vec<(String, Value)> {
     }
     if let Some(auto) = run.auto_leading_flag() {
         put(&mut d, "AutoLeading", Value::Bool(auto));
+        if auto {
+            // Photoshop's own form (see `sheet_for`): auto leading writes the
+            // neutral absolute `Leading` 0, never the computed line height.
+            put_num(&mut d, "Leading", 0.0);
+        }
     }
-    if let Some(l) = run.leading {
+    if let Some(l) = run.leading
+        && run.auto_leading_flag() != Some(true)
+    {
         put_num(&mut d, "Leading", l);
+    }
+    // `OldStyle` is EngineData's key for the `onum` feature; the sheet's own
+    // `Features` array is not modelled, so a run whose model says old-style
+    // must write the key itself or the figures read back as lining.
+    if run.old_style && !run.features.iter().any(|f| f.tag == "onum" && f.value > 0) {
+        put(&mut d, "OldStyle", Value::Bool(true));
     }
     put(&mut d, "FauxBold", Value::Bool(run.faux_bold));
     put(&mut d, "FauxItalic", Value::Bool(run.faux_italic));
@@ -202,7 +236,36 @@ fn sheet_for(run: &RunStyle) -> Vec<(String, Value)> {
     if let Some(on) = run.no_break {
         put(&mut d, "NoBreak", Value::Bool(on));
     }
+    if let Some(code) = run.baseline {
+        put(&mut d, "FontBaseline", Value::Int(code));
+    }
+    if let Some(roman) = run.rotate_roman {
+        put(
+            &mut d,
+            "BaselineDirection",
+            Value::Int(if roman { 2 } else { 1 }),
+        );
+    }
+    for feature in &run.features {
+        if let Some((key, _)) = OPENTYPE_KEYS.iter().find(|(_, tag)| *tag == feature.tag) {
+            put(&mut d, key, Value::Bool(feature.value > 0));
+        }
+    }
     d
+}
+
+/// Writes the OpenType features that have an `EngineData` key; the others
+/// (`ss01`…`ss20`) live only in `Txt2` and reach the pixels through
+/// [`super::super::model::RunStyle::features`] directly.
+fn put_features<'a>(
+    put: &mut dyn FnMut(&'a str, Value),
+    features: &[super::super::model::RunFeature],
+) {
+    for feature in features {
+        if let Some((key, _)) = OPENTYPE_KEYS.iter().find(|(_, tag)| *tag == feature.tag) {
+            put(key, Value::Bool(feature.value > 0));
+        }
+    }
 }
 
 /// `FontCaps`: 0 none, 1 small caps, 2 all caps (Aspose.PSD `FontCaps` enum).

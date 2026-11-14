@@ -8,7 +8,7 @@ pub use paragraph::{
     apply_paragraph_formats, apply_paragraph_runs, paragraph_formats_from_engine_data,
     paragraphs_from_engine_data,
 };
-pub use parse::from_engine_data;
+pub use parse::{from_engine_data, from_engine_data_with_text};
 pub use write::{apply_style_runs, to_engine_data};
 
 /// Writes the layer's antialias mode (`EngineDict/AntiAlias`).
@@ -90,7 +90,14 @@ pub fn ensure_engine_font(root: &mut Value, name: &str) -> Option<usize> {
             return Some(i);
         }
     }
-    fonts.push(Value::dict([("Name", Value::Str(name.to_owned()))]));
+    // Photoshop's font records carry the script, type and synthesis flags; CoolType reads the
+    // record, not just the name.
+    fonts.push(Value::dict([
+        ("Name", Value::Str(name.to_owned())),
+        ("Script", Value::Int(0)),
+        ("FontType", Value::Int(0)),
+        ("Synthetic", Value::Int(0)),
+    ]));
     Some(fonts.len() - 1)
 }
 
@@ -133,6 +140,22 @@ fn color_rgb(value: &Value) -> Option<[u8; 3]> {
     let comp = |v: &Value| (v.as_f32().unwrap_or(0.0).clamp(0.0, 1.0) * 255.0).round() as u8;
     Some([comp(&values[1]), comp(&values[2]), comp(&values[3])])
 }
+
+/// `EngineData` character-sheet keys that carry one OpenType feature each
+/// (`docs/txt2-map.md` §2): the same eight `Txt2` flags Photoshop writes beside
+/// the sheet (`/6/20`, `/6/23`…). Tags with no key (`ss01`…`ss20`) reach
+/// `EngineData` only through a sheet's own `Features` array, which is not
+/// modelled; `Txt2`'s Stylistic Sets mask (`/6/85`) is read separately.
+pub const OPENTYPE_KEYS: [(&str, &str); 8] = [
+    ("ContextualLigatures", "calt"),
+    ("Swash", "swsh"),
+    ("OldStyle", "onum"),
+    ("StylisticAlternates", "salt"),
+    ("Titling", "titl"),
+    ("Ornaments", "ornm"),
+    ("Ordinals", "ordn"),
+    ("Fractions", "frac"),
+];
 
 const CAPS_SMALL: i64 = 1;
 const CAPS_ALL: i64 = 2;

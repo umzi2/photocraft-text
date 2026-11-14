@@ -5,7 +5,7 @@
 use photocraft_text::engine_data::Value;
 use photocraft_text::layer_render::{FaceStore, RectTarget, render_from_engine_data_warped};
 use photocraft_text::runs::{RunStyle, to_engine_data};
-use photocraft_text::warp::{FlatGeometry, FlatSurface, Style, Warp, placement};
+use photocraft_text::warp::{self, FlatGeometry, FlatSurface, Style, Warp, placement};
 
 fn store() -> FaceStore {
     let mut store = FaceStore::new();
@@ -287,4 +287,138 @@ fn placement_needs_a_fitted_bend() {
         let (wx, wy) = p.forward(geom, x, y);
         assert!(wx >= p.min.0 - 1.0e-3 && wy >= p.min.1 - 1.0e-3);
     }
+}
+
+/// The style map is computed, not a constant patch: the arch grid at 50 %
+/// bend and the box aspect Photoshop's layer 13 uses must be exactly the
+/// closed form (`geom::warp::preset_grid`) engine-parity measured, whose
+/// forward map tracks Photoshop's band centroids within ~1 px.
+///
+/// Pinned numbers: arch, b = +0.5, box 224.28 x 37.38 (h = 1/6).
+#[test]
+fn the_arch_map_is_the_closed_form() {
+    let bounds = (0.0f32, 0.0, 224.28, 37.38);
+    let warp = Warp {
+        style: warp::Style::Arch,
+        value: 50.0,
+        perspective: 0.0,
+        other: 0.0,
+    };
+    let grid = warp::map_for(&warp, bounds).expect("arch map");
+    let expected = [
+        [[0.0, 0.0], [0.0, 1.0 / 3.0], [0.0, 2.0 / 3.0], [0.0, 1.0]],
+        [
+            [0.276142, -1.656854],
+            [0.276142, -1.323521],
+            [0.276142, -0.990188],
+            [0.276142, -0.656854],
+        ],
+        [
+            [0.723858, -1.656854],
+            [0.723858, -1.323521],
+            [0.723858, -0.990188],
+            [0.723858, -0.656854],
+        ],
+        [[1.0, 0.0], [1.0, 1.0 / 3.0], [1.0, 2.0 / 3.0], [1.0, 1.0]],
+    ];
+    for (row, want_row) in grid.iter().zip(expected) {
+        for (point, want) in row.iter().zip(want_row) {
+            assert!(
+                (point[0] - want[0]).abs() < 1e-5 && (point[1] - want[1]).abs() < 1e-5,
+                "arch control point {point:?} != {want:?}"
+            );
+        }
+    }
+    // Only the two inner columns move: the arch's vertical lines stay straight.
+    for j in 0..4 {
+        assert!((grid[0][j][0] - 0.0).abs() < 1e-6);
+        assert!((grid[3][j][0] - 1.0).abs() < 1e-6);
+        assert!((grid[2][j][0] - grid[1][j][0] - (0.723858 - 0.276142)).abs() < 1e-5);
+    }
+    // Forward samples engine-parity measured (box units; v = 0, 0.5, 1).
+    let (w, h) = (bounds.2, bounds.3);
+    let sample = |u: f32, v: f32| {
+        let (x, y) = warp::forward(&grid, bounds, w * u, h * v);
+        (x / w, y / h)
+    };
+    for (u, want) in [
+        (0.25f32, [(0.233915, -0.931981), (0.233915, -0.431981), (0.233915, 0.068019)]),
+        (0.5, [(0.5, -1.242641), (0.5, -0.742641), (0.5, -0.242641)]),
+    ] {
+        for (v, want) in [0.0f32, 0.5, 1.0].into_iter().zip(want) {
+            let (x, y) = sample(u, v);
+            assert!(
+                (x - want.0).abs() < 1e-5 && (y - want.1).abs() < 1e-5,
+                "arch forward ({u}, {v}) = ({x}, {y}) != {want:?}"
+            );
+        }
+    }
+}
+
+/// `warpArc` keeps the per-layer fitted grid: engine-parity measured the
+/// generic chord-normalised cylinder at `.8981` IoU on `orig_show.psd` layer 12
+/// against `.9323` for the fitted `ARC_PATCH`, so only the arch style uses the
+/// computed map.
+#[test]
+fn the_arc_style_keeps_the_fitted_grid() {
+    let bounds = (0.0f32, 0.0, 204.78, 37.38);
+    let arc = |value: f32| {
+        warp::map_for(
+            &Warp {
+                style: Style::Arc,
+                value,
+                perspective: 0.0,
+                other: 0.0,
+            },
+            bounds,
+        )
+        .expect("arc map")
+    };
+    // At the fitted bend the grid is the checked-in fit.
+    let fitted = arc(50.0);
+    for (point, want) in [
+        (fitted[0][0], (-0.13648, 1.31338)),
+        (fitted[1][0], (0.22029, -0.54010)),
+        (fitted[3][3], (0.98153, 2.17508)),
+    ] {
+        assert!(
+            (point[0] - want.0).abs() < 1e-4 && (point[1] - want.1).abs() < 1e-4,
+            "fitted arc control point {point:?} != {want:?}"
+        );
+    }
+    // The bend interpolation runs from the identity grid at 0 % to the fitted
+    // grid at 50 %.
+    let half = arc(25.0);
+    for (i, row) in half.iter().enumerate() {
+        for (j, point) in row.iter().enumerate() {
+            let identity = [i as f32 / 3.0, j as f32 / 3.0];
+            let want = [
+                identity[0] + (fitted[i][j][0] - identity[0]) * 0.5,
+                identity[1] + (fitted[i][j][1] - identity[1]) * 0.5,
+            ];
+            assert!(
+                (point[0] - want[0]).abs() < 1e-5 && (point[1] - want[1]).abs() < 1e-5,
+                "arc bend interpolation at ({i},{j}): {point:?} != {want:?}"
+            );
+        }
+    }
+}
+
+/// Unwarped layers have no map, and a style without a ported map has none.
+#[test]
+fn unwarped_layers_have_no_map() {
+    let flat = Warp {
+        style: warp::Style::Arch,
+        value: 0.0,
+        perspective: 0.0,
+        other: 0.0,
+    };
+    assert!(warp::map_for(&flat, (0.0, 0.0, 100.0, 20.0)).is_none());
+    let unsupported = Warp {
+        style: warp::Style::Other,
+        value: 50.0,
+        perspective: 0.0,
+        other: 0.0,
+    };
+    assert!(warp::map_for(&unsupported, (0.0, 0.0, 100.0, 20.0)).is_none());
 }

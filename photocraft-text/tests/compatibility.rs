@@ -1,9 +1,162 @@
 //! Recorded from the pre-refactor implementation; these are compatibility,
 //! not Photoshop-correctness, expectations. All fixture files are mandatory.
 //! Source baseline: repository commit c900bdd, captured before source changes.
+//!
+//! **Re-record discipline (mandatory).** Every regeneration must take
+//! `cp -a tests/assets /tmp/goldens_pre` first, then `REA_REGEN=1 cargo test
+//! --test compatibility`, then `diff -rq /tmp/goldens_pre tests/assets`; report
+//! only that diff (and keep the pre-copy path in the report). Without the
+//! pre-copy an audit can only compare against the committed tree, which in a
+//! shared checkout conflates concurrent work.
+//!
+//! **Optical feature render re-record (2026-11-14).** `goldens/features_optical*` were
+//! re-recorded because the optical kerning model was calibrated to Photoshop
+//! (`optical.rs`: `optical_pair_chars` scales the fitted model's raw closure by a measured
+//! character class — punctuation 0.81, `F`+round 0.42, `W`/`V`+round 0.78, `A/V/W/X/K` pairs
+//! 0.64, `T`/`Y` pairs 0.95 — with `OPTICAL_MAX` 0.19 em; `tests/optical_pairs.rs` pins twelve
+//! Photoshop-measured pairs within 1 px at 48 pt). The audited diff against
+//! `/tmp/goldens_pre_txt2` is exactly the four optical render files and nothing else:
+//!
+//! - `features_optical.pixels.bin` (16 B geometry): width 533 -> 517, height 49 and the
+//!   offset (4.0, -37.228) unchanged.
+//! - `features_optical.rgba.bin`: 104468 -> 101332 B = -784 px = the 16 columns the tighter
+//!   kerning removes from the layer canvas.
+//! - `features_optical.layout.bin`: same 1050 B; line width 539.596 -> 523.681 and every glyph
+//!   `x`/`advance` delta is that pair's optical closure (`Ha` -0.997, `am`/`mb` -1.496,
+//!   `AV` -1.799, `y.` -2.459, `st`/`iv`/`v `/` A`/`Ry`/`. ` 0), the sum matching the line width
+//!   delta to 0.0001 px; gids, chars, colours, scales, faux, leading, baseline and run indices
+//!   are identical.
+//! - `features_optical_fixed_rect.rgba.bin`: same 64000 B; ink bbox (18, 9, 159, 46) and top
+//!   row unchanged, 1567 changed pixels, every one of them a glyph-ink pixel (0 changed outside
+//!   ink).
+//!
+//! No authored `.psd.bin`, no `models/*.engine.bin`, no input, and no other case's pixels/rgba
+//! changed (83 files compared, 4 differ). The authored files still open silently in Photoshop
+//! (152/210/249 ms for `point_plain`/`area_paragraphs`/`point_styles`) and so does the UI-saved
+//! `optical_on` file (179 ms).
+//!
+//! **Vertical family re-record (2026-11-14).** `goldens/vertical.*` and
+//! `point_styles.*` were re-recorded because the vertical flow changed
+//! (`layer_render/vertical.rs`): the column step is the paragraph leading
+//! (`size * auto_leading`, or an explicit `Leading`) instead of a flat em, the
+//! first column's one-em box is anchored flush with the box's right edge, and
+//! columns whose box leaves the frame are dropped. `vertical.rgba.bin`
+//! 133304 -> 161704 B is expected under a layout change (the block spans more
+//! differently placed columns) and the small `*.engine.bin` shrink (e.g.
+//! 8963 -> 8911 B) is the neutral `Leading 0` form that auto leading now
+//! writes. Pixels, models and rgba for *horizontal* cases are not part of this
+//! change (their re-record came from the first-baseline cap rule and the
+//! auto-leading form, both documented in out/verify/text-baseline-offset.md).
+//!
+//! **Vertical anchor and across clip (2026-11-14, §14 of the same report).**
+//! `layer_render/vertical.rs` anchors a boxed vertical column's em cell
+//! `size * vertical_b0_ratio(face)` inside the frame's right edge instead of
+//! half an em (measured from Photoshop's own composed cache: 0.3729935 em
+//! Myriad, 0.3634949 em Times, 0.4029998 em Noto Sans; see
+//! `out/verify/text-baseline-offset.md` §14.1-14.4), and the across-axis
+//! visibility rule is one-sided: a column is hidden only when its whole em cell
+//! is left of the box, so the first cell's deliberate overhang past the right
+//! edge stays. No golden moved — the recorded vertical case is point text
+//! (`box_size = None`), whose first column stays on the `TySh` origin.
+//!
+//! The five authored-PSD baselines (`goldens/{point_plain,point_styles,
+//! point_center,area_paragraphs,area_composer}.psd.bin`) were re-recorded when
+//! `psd::author` started writing the layer text into the `TySh` `Txt `
+//! descriptor (the pre-refactor writer left the template's stale text there, so
+//! the baseline encoded an internally inconsistent `TySh`: new `Txt2`/
+//! `EngineData`, old descriptor). The re-recorded diff is that text change plus
+//! the character/paragraph properties the writer newly models; it is not a
+//! render change:
+//!
+//! - `TySh` text shrinks by the character deltas below, `EngineData` is
+//!   byte-identical, the layer channel bytes are identical, and no layer rect
+//!   moves.
+//! - `Txt2` is byte-identical for `point_plain`/`area_paragraphs`/
+//!   `area_composer`; `point_styles` gains `/6/2,3,12,15,16` (bold, italic,
+//!   all caps, strike, underline: −2 data bytes, absorbed by the 4-byte block
+//!   padding) and `point_center` gains `/6/10` + `/6/11 0`: manual kerning in
+//!   Photoshop's 16.16 fixed-point form (kern 80 → `0.00122`, +12 data bytes);
+//!   the older `+7` note was an integer `80` that Photoshop would have read as
+//!   5 242 880 milliem.)
+//! - File deltas: `point_plain` −14 B = 7 UTF-16 units (`Txt2` unchanged);
+//!   `area_paragraphs` −44 B = 22 units; `area_composer` −60 B = 30 units;
+//!   `point_styles` −20 B = 10 units and `point_center` −28 B = 20 units plus
+//!   the `Txt2` deltas above (TySh −40, Txt2 block +12).
+//!
+//! A later behaviour fix re-recorded the two area cases (and their
+//! `tests/assets/models/*.engine.bin`): a frame change now also patches the
+//! `TySh` `EngineData` `/Rendered/Shapes/Children[0]/Cookie/Photoshop/BoxBounds`
+//! array, because Photoshop composes a box from that cookie and silently keeps
+//! the old box otherwise (measured by the PS fit experiment: authored frame
+//! widths 479/480/481 all re-composed as the template's 480). Only that one
+//! array changes — `area_paragraphs` `[0.0 0.0 430.0 200.0]` →
+//! `[20.0 30.0 270.0 230.0]`, `area_composer` `[0.0 0.0 430.0 200.0]` →
+//! `[15.0 25.0 265.0 225.0]`, the spec frames — +2 bytes each: the `TySh`
+//! block grows 35950 → 35952 (resp. 19274 → 19276), the layer pixels, channels,
+//! `Txt2` and every other block stay byte-identical (the `.rgba.bin`/
+//! `.pixels.bin` goldens still match). The point cases are untouched (they
+//! write `PointBase`, which did not change).
+//!
+//! A composer fix then re-recorded the `area_composer` *render* goldens
+//! (`area_composer.{layout,pixels,rgba}.bin`) and their `_spec` pair
+//! (`area_composer_spec.{pixels,rgba}.bin`, moved identically): the render
+//! geometry goes `250x73` (3 lines) -> `252x46` (2 lines). The case's paragraph
+//! carries `GlyphSpacing [0.9, 1.0, 1.1]`; the paragraph-run resolver used to
+//! look up a legacy `GlyphScaling` spelling, missed it and composed with
+//! `[1, 1, 1]`, so the justified line had no glyph-compression room and wrapped
+//! one line early. With the real key honoured it fits 2 lines. That is
+//! Photoshop-correct, not a regression: authoring the case and letting Photoshop
+//! recompose it gives 2 lines too (its cache holds 40 + 11 glyphs), and forcing
+//! the three spacing keys back to `[1, 1, 1]` reproduces the old `250x73`
+//! baseline exactly. `area_paragraphs` is untouched (its render goldens still
+//! match). Full chain and the ruled-out causes: `. /out/verify/composition-grid.md`
+//! section 16 (`photocraft` checkout root, `out/verify`).
+
+//! `photocraft_psd` pads layer tagged blocks to an even length and global tag
+//! blocks to 4 bytes, which is where the ±1/±2-byte block rounding comes from.
+
+
+//! The four vertical baselines (`vertical.pixels.bin`, `vertical.rgba.bin`,
+//! `vertical_fixed_rect.pixels.bin`, `vertical_fixed_rect.rgba.bin`) were
+//! re-recorded when vertical hard breaks started a new column: the
+//! `point_styles` text `"Red Bold\rSmall caps"` used to compose as one
+//! 18-glyph column (38x877 at offset (-23,-19)) and now gives two columns,
+//! the second one a column to the left (72x493 at offset (-57,-19)). The
+//! fixed-rectangle render keeps its 160x100 crop (its `.pixels.bin` bytes are
+//! unchanged) and only its pixel bytes moved. No other baseline moved for
+//! that fix; the two area-PSD re-records above are the `BoxBounds` change.
+
+
+//! `warp_arch.rgba.bin` was re-recorded when `warp::map_for` replaced the
+//! 50 %-fitted arch constant with Photoshop's computed arch style math (ported
+//! from the fork's `geom::warp::preset_grid`); only the pixel values inside the
+//! same 120x60 rectangle changed (`warp_arch.pixels.bin` and `.rect.bin` are
+//! byte-identical, so no geometry moved). `warp_arc.rgba.bin` is **unchanged**:
+//! the arc style keeps its per-layer fitted grid, because the generic style math
+//! measured `.8981` IoU on layer 12 against the fitted grid's `.9323`.
+
+
+//! Five authored-PSD baselines were re-recorded when `EngineData::write` /
+//! `fmt_number` (`src/engine_data.rs:313`) started printing the shortest `f32`
+//! form: the writer used to widen `f32` style values to `f64` and print the full
+//! binary expansion (`.800000011920929`, `1.2000000476837158`), and Photoshop's
+//! CoolType parser aborts a document on those 17-18 character number tokens
+//! ("program error"). The five old baselines were the bytes Photoshop rejected:
+//!
+//! | golden | before | after |
+//! |---|---|---|
+//! | `point_plain.psd.bin` | 128 228 | 128 152 |
+//! | `point_styles.psd.bin` | 122 874 | 122 722 |
+//! | `point_center.psd.bin` | 110 000 | 109 914 |
+//! | `area_composer.psd.bin` | 144 906 | 144 830 |
+//! | `area_paragraphs.psd.bin` | 162 856 | 162 740 |
+//!
+//! Every delta is the removed mantissa digits; no layout, pixels, rgba or model
+//! baseline moved (verified file by file against a pre-regen copy). Acceptance
+//! evidence, including the four export shapes opening in Photoshop 20.0.2, is in
+//! `out/verify/psd-photoshop-open.md`.
 
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use photocraft_psd::PsdFile;
 use photocraft_text::area::{self, AreaLayout};
@@ -85,6 +238,15 @@ fn model(case: &Case) -> Value {
 }
 
 fn golden(path: PathBuf, actual: &[u8]) {
+    // `REA_REGEN=1` re-records any golden this suite compares, so a writer fix
+    // that legitimately moves pixels has one uniform regen path (the two
+    // `regen_*` tests cover the families that need a different construction).
+    if std::env::var("REA_REGEN").as_deref() == Ok("1") {
+        println!("re-recorded {} ({} bytes)", path.display(), actual.len());
+        std::fs::write(&path, actual)
+            .unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+        return;
+    }
     let expected = std::fs::read(&path)
         .unwrap_or_else(|e| panic!("required baseline {}: {e}", path.display()));
     let difference = expected.iter().zip(actual).position(|(a, b)| a != b);
@@ -104,6 +266,21 @@ fn check_bytes(name: &str, actual: &[u8]) {
     golden(assets().join("goldens").join(name), actual);
 }
 
+/// The 16-byte geometry a pixel golden stores: width, height and the offset as
+/// little-endian u32 words.
+fn pixel_geometry(pixels: &LayerPixels) -> Vec<u8> {
+    let mut geometry = Vec::new();
+    for word in [
+        pixels.width,
+        pixels.height,
+        pixels.offset.0.to_bits(),
+        pixels.offset.1.to_bits(),
+    ] {
+        geometry.extend_from_slice(&word.to_le_bytes());
+    }
+    geometry
+}
+
 fn check_pixels(name: &str, pixels: &LayerPixels) {
     assert_eq!(
         pixels.rgba.len(),
@@ -113,17 +290,7 @@ fn check_pixels(name: &str, pixels: &LayerPixels) {
         pixels.rgba.chunks_exact(4).any(|p| p[3] != 0),
         "{name}: no ink"
     );
-    let mut geometry = Vec::new();
-    // Width, height, offset.x bits, offset.y bits: little-endian u32 words.
-    for word in [
-        pixels.width,
-        pixels.height,
-        pixels.offset.0.to_bits(),
-        pixels.offset.1.to_bits(),
-    ] {
-        geometry.extend_from_slice(&word.to_le_bytes());
-    }
-    check_bytes(&format!("{name}.pixels.bin"), &geometry);
+    check_bytes(&format!("{name}.pixels.bin"), &pixel_geometry(pixels));
     check_bytes(&format!("{name}.rgba.bin"), &pixels.rgba);
 }
 
@@ -283,7 +450,8 @@ fn layout_bytes(layout: &AreaLayout) -> Vec<u8> {
     bytes
 }
 
-fn check_case_render(case: &Case) {
+/// Every pixel/geometry golden one authored case records, in check order.
+fn case_render_goldens(case: &Case) -> Vec<(String, Vec<u8>)> {
     let store = store();
     let ed = model(case);
     let pixels = layer_render::render_from_engine_data(
@@ -294,11 +462,22 @@ fn check_case_render(case: &Case) {
         (0.25, 1.5),
     )
     .expect("EngineData render");
-    check_pixels(&case.name, &pixels);
-    check_bytes(
-        &format!("{}.layout.bin", case.name),
-        &layout_bytes(&layout(case, &[])),
+    assert!(
+        pixels.rgba.chunks_exact(4).any(|p| p[3] != 0),
+        "{}: no ink",
+        case.name
     );
+    let mut goldens = vec![
+        (
+            format!("{}.pixels.bin", case.name),
+            pixel_geometry(&pixels),
+        ),
+        (format!("{}.rgba.bin", case.name), pixels.rgba.clone()),
+        (
+            format!("{}.layout.bin", case.name),
+            layout_bytes(&layout(case, &[])),
+        ),
+    ];
     let runs = runs::from_engine_data(&ed);
     let paragraphs = layer_render::paragraph_styles_of(&runs::paragraphs_from_engine_data(&ed));
     let spec = LayerTextStyle {
@@ -311,7 +490,83 @@ fn check_case_render(case: &Case) {
     let pixels = store
         .render_spec_with(&text(case), &runs, &spec, RenderOptions::default())
         .expect("direct specification render");
-    check_pixels(&format!("{}_spec", case.name), &pixels);
+    assert!(
+        pixels.rgba.chunks_exact(4).any(|p| p[3] != 0),
+        "{}_spec: no ink",
+        case.name
+    );
+    goldens.push((
+        format!("{}_spec.pixels.bin", case.name),
+        pixel_geometry(&pixels),
+    ));
+    goldens.push((format!("{}_spec.rgba.bin", case.name), pixels.rgba.clone()));
+    goldens
+}
+
+fn check_case_render(case: &Case) {
+    for (name, bytes) in case_render_goldens(case) {
+        check_bytes(&name, &bytes);
+    }
+}
+
+/// Re-records the authored PSD and `EngineData` model goldens (run explicitly,
+/// see the header note): `REA_REGEN=1 cargo test -p photocraft-text --test
+/// compatibility regen_author_goldens -- --ignored`.
+#[test]
+#[ignore = "writes the checked-in goldens; run explicitly when a writer fix changes them"]
+fn regen_author_goldens() {
+    assert_eq!(
+        std::env::var("REA_REGEN").as_deref(),
+        Ok("1"),
+        "set REA_REGEN=1 to confirm re-recording the checked-in goldens"
+    );
+    for case in cases() {
+        let store = store();
+        let bytes = std::fs::read(assets().join("inputs").join(&case.template));
+        let Ok(bytes) = bytes else { continue };
+        let mut file = PsdFile::from_bytes(&bytes).expect("PSD input parse");
+        author(&mut file, &case.spec, &store).expect("author original PSD");
+        let psd = file.to_bytes().expect("serialize entire PSD");
+        std::fs::write(
+            assets().join("goldens").join(format!("{}.psd.bin", case.name)),
+            &psd,
+        )
+        .expect("write psd golden");
+        let model = engine_data::write(&engine_data_of(&file));
+        std::fs::write(
+            assets()
+                .join("models")
+                .join(format!("{}.engine.bin", case.name)),
+            &model,
+        )
+        .expect("write model golden");
+        println!(
+            "re-recorded {} ({} B psd, {} B model)",
+            case.name,
+            psd.len(),
+            model.len()
+        );
+    }
+}
+
+/// Re-records the render goldens of the named cases (run explicitly, see the
+/// header note): `REA_REGEN=1 cargo test -p photocraft-text --test compatibility
+/// regen_render_goldens -- --ignored`.
+#[test]
+#[ignore = "writes the checked-in goldens; run explicitly when a writer fix changes them"]
+fn regen_render_goldens() {
+    assert_eq!(
+        std::env::var("REA_REGEN").as_deref(),
+        Ok("1"),
+        "set REA_REGEN=1 to confirm re-recording the checked-in goldens"
+    );
+    for name in ["area_paragraphs", "area_composer"] {
+        for (golden, bytes) in case_render_goldens(&case(name)) {
+            std::fs::write(assets().join("goldens").join(&golden), &bytes)
+                .unwrap_or_else(|e| panic!("write {golden}: {e}"));
+            println!("re-recorded {golden} ({} bytes)", bytes.len());
+        }
+    }
 }
 
 fn target() -> RectTarget {
@@ -346,6 +601,7 @@ fn check_fixed_and_vertical() {
         &ed,
         &text(&case),
         (0.25, 1.5),
+        None,
         target(),
     )
     .expect("vertical fixed rectangle render");
@@ -569,54 +825,4 @@ fn warped_pixels_bytes() {
 fn atlas_selection_bytes() {
     check_environment();
     check_atlases();
-}
-
-#[test]
-#[ignore = "manual hot-path timing; excludes fixture loading and compilation"]
-fn render_hot_path_timing() {
-    check_environment();
-    let mut store = store();
-    let point = case("point_plain");
-    let area = case("area_paragraphs");
-    for case in [&point, &area] {
-        let ed = model(case);
-        let text = text(case);
-        let size = box_size(case);
-        let start = Instant::now();
-        let mut last = None;
-        for _ in 0..100 {
-            last = Some(std::hint::black_box(
-                layer_render::render_from_engine_data(&store, &ed, &text, size, (0.25, 1.5))
-                    .expect("timed render"),
-            ));
-        }
-        eprintln!("{}: 100 renders {:?}", case.name, start.elapsed());
-        check_pixels(&case.name, &last.expect("100 renders"));
-    }
-    store.set_atlases(vec![
-        atlas(0.5, false),
-        atlas(0.25, true),
-        atlas(0.0, false),
-        atlas(0.75, true),
-    ]);
-    let (runs, spec) = atlas_spec();
-    let start = Instant::now();
-    let mut last = None;
-    for _ in 0..100 {
-        last = Some(std::hint::black_box(
-            store
-                .render_spec_with(
-                    "Hamburgefonstiv AVTRy.",
-                    &runs,
-                    &spec,
-                    RenderOptions {
-                        use_atlas: true,
-                        ..Default::default()
-                    },
-                )
-                .expect("timed atlas render"),
-        ));
-    }
-    eprintln!("atlas_phases: 100 renders {:?}", start.elapsed());
-    check_pixels("atlas_phases", &last.expect("100 renders"));
 }

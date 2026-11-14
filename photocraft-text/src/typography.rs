@@ -245,6 +245,14 @@ pub fn gsub_has_feature(gsub: &[u8], tag: [u8; 4]) -> bool {
     })
 }
 
+/// Whether `ch` is roman text for vertical composition: Latin letters,
+/// digits and punctuation. Photoshop rotates those 90° clockwise down a
+/// vertical column when the run's `BaselineDirection` is 2; CJK text always
+/// stands upright.
+pub fn is_roman(ch: char) -> bool {
+    (ch.is_ascii() && !ch.is_ascii_control()) || ('\u{00C0}'..='\u{024F}').contains(&ch)
+}
+
 /// Whether standard ligatures apply to a run: the layer flag must be on and the
 /// face must have a GSUB `liga` feature. A font without GSUB gets no
 /// substitution (measured for CCMeanwhile, which has no GSUB table).

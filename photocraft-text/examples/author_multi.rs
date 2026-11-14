@@ -14,8 +14,8 @@
 #[path = "common/fonts.rs"]
 mod fonts;
 
-use photocraft_text::psd::{LayerSpec, RunSpec, author};
 use photocraft_psd::PsdFile;
+use photocraft_text::psd::{LayerSpec, RunSpec, author};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let a: Vec<String> = std::env::args().collect();
@@ -39,8 +39,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             paragraph: Default::default(),
             aa: None,
             frame: None,
+            shape: None,
+            orientation: None,
+            transform: None,
             atlas: None,
             fractional: None,
+            ..LayerSpec::default()
         },
         &store,
     )?;

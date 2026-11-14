@@ -4,7 +4,7 @@ use super::path::{
     Step, Value, ensure_container, ensure_value, format_real, replace_value, scalar_at, value_span,
 };
 use super::syntax::tokens;
-use super::text::{paragraph_run_lengths, table_path};
+use super::text::{paragraph_run_lengths_at, table_path_at};
 
 /// Paragraph-level properties Photoshop keeps per paragraph run in `Txt2`.
 ///
@@ -215,9 +215,9 @@ impl Default for Hyphenation {
     }
 }
 
-/// Path to paragraph run `i`'s property dictionary.
-pub fn paragraph_props_path(i: usize) -> Vec<Step<'static>> {
-    let mut p = table_path(false);
+/// Path to paragraph run `i`'s property dictionary of text object `object`.
+pub fn paragraph_props_path_at(object: usize, i: usize) -> Vec<Step<'static>> {
+    let mut p = table_path_at(object, false);
     p.push(Step::Index(i));
     p.push(Step::Key("0"));
     p.push(Step::Key("0"));
@@ -225,9 +225,19 @@ pub fn paragraph_props_path(i: usize) -> Vec<Step<'static>> {
     p
 }
 
-/// Number of paragraph runs in the layer text.
+/// Path to paragraph run `i`'s property dictionary (text object 0).
+pub fn paragraph_props_path(i: usize) -> Vec<Step<'static>> {
+    paragraph_props_path_at(0, i)
+}
+
+/// Number of paragraph runs of text object `object`.
+pub fn paragraph_count_at(block: &[u8], object: usize) -> Result<usize, Error> {
+    Ok(paragraph_run_lengths_at(block, object)?.len())
+}
+
+/// Number of paragraph runs in the layer text (text object 0).
 pub fn paragraph_count(block: &[u8]) -> Result<usize, Error> {
-    Ok(paragraph_run_lengths(block)?.len())
+    paragraph_count_at(block, 0)
 }
 
 /// Writes one scalar paragraph property of paragraph run `i`.
@@ -240,7 +250,18 @@ pub fn set_paragraph_property(
     property: ParagraphProperty,
     value: &Value,
 ) -> Result<Vec<u8>, Error> {
-    let mut path = paragraph_props_path(i);
+    set_paragraph_property_at(block, 0, i, property, value)
+}
+
+/// [`set_paragraph_property`] for text object `object`.
+pub fn set_paragraph_property_at(
+    block: &[u8],
+    object: usize,
+    i: usize,
+    property: ParagraphProperty,
+    value: &Value,
+) -> Result<Vec<u8>, Error> {
+    let mut path = paragraph_props_path_at(object, i);
     path.push(Step::Key(property.key()));
     replace_value(block, &path, value)
 }
@@ -253,7 +274,18 @@ pub fn set_paragraph_property_or_insert(
     property: ParagraphProperty,
     value: &Value,
 ) -> Result<Vec<u8>, Error> {
-    let mut path = paragraph_props_path(i);
+    set_paragraph_property_or_insert_at(block, 0, i, property, value)
+}
+
+/// [`set_paragraph_property_or_insert`] for text object `object`.
+pub fn set_paragraph_property_or_insert_at(
+    block: &[u8],
+    object: usize,
+    i: usize,
+    property: ParagraphProperty,
+    value: &Value,
+) -> Result<Vec<u8>, Error> {
+    let mut path = paragraph_props_path_at(object, i);
     path.push(Step::Key(property.key()));
     ensure_value(block, &path, value)
 }
@@ -265,7 +297,18 @@ pub fn set_paragraph_range(
     property: ParagraphProperty,
     values: [f32; 3],
 ) -> Result<Vec<u8>, Error> {
-    let mut path = paragraph_props_path(i);
+    set_paragraph_range_at(block, 0, i, property, values)
+}
+
+/// [`set_paragraph_range`] for text object `object`.
+pub fn set_paragraph_range_at(
+    block: &[u8],
+    object: usize,
+    i: usize,
+    property: ParagraphProperty,
+    values: [f32; 3],
+) -> Result<Vec<u8>, Error> {
+    let mut path = paragraph_props_path_at(object, i);
     path.push(Step::Key(property.key()));
     let value = format!(
         "[ {} {} {} ]",
@@ -281,14 +324,34 @@ pub fn set_paragraph_range(
 /// `None` when the slot, the paragraph or the block is absent; the
 /// `[min desired max]` triples are read with [`paragraph_range`].
 pub fn paragraph_property(block: &[u8], i: usize, property: ParagraphProperty) -> Option<Value> {
-    let mut path = paragraph_props_path(i);
+    paragraph_property_at(block, 0, i, property)
+}
+
+/// [`paragraph_property`] for text object `object`.
+pub fn paragraph_property_at(
+    block: &[u8],
+    object: usize,
+    i: usize,
+    property: ParagraphProperty,
+) -> Option<Value> {
+    let mut path = paragraph_props_path_at(object, i);
     path.push(Step::Key(property.key()));
     scalar_at(block, &path)
 }
 
 /// Reads a `[min desired max]` triple, or `None` when the slot is absent.
 pub fn paragraph_range(block: &[u8], i: usize, property: ParagraphProperty) -> Option<[f32; 3]> {
-    let mut path = paragraph_props_path(i);
+    paragraph_range_at(block, 0, i, property)
+}
+
+/// [`paragraph_range`] for text object `object`.
+pub fn paragraph_range_at(
+    block: &[u8],
+    object: usize,
+    i: usize,
+    property: ParagraphProperty,
+) -> Option<[f32; 3]> {
+    let mut path = paragraph_props_path_at(object, i);
     path.push(Step::Key(property.key()));
     let (start, end) = value_span(&tokens(block).ok()?, &path)?;
     let text = std::str::from_utf8(&block[start..end]).ok()?;
@@ -568,6 +631,352 @@ pub fn paragraph_hyphenation(block: &[u8], i: usize) -> Option<Hyphenation> {
 
 fn paragraph_number(block: &[u8], i: usize, property: ParagraphProperty) -> Option<f32> {
     match paragraph_property(block, i, property)? {
+        Value::Int(v) => Some(v as f32),
+        Value::Real(v) => Some(v as f32),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Object-index forms of the typed setters and getters.
+//
+// The functions above write text object 0 (the only object a single-layer
+// document has); these take the object's index in the block's `/1 /1` array.
+// ---------------------------------------------------------------------------
+
+/// Justification of paragraph run `i` of text object `object` (`/5/0`).
+pub fn set_paragraph_justification_at(
+    block: &[u8],
+    object: usize,
+    i: usize,
+    justification: Justification,
+) -> Result<Vec<u8>, Error> {
+    set_paragraph_property_at(
+        block,
+        object,
+        i,
+        ParagraphProperty::Justification,
+        &Value::Int(justification.code()),
+    )
+}
+
+/// Same as [`set_paragraph_justification_at`] from a stored code.
+pub fn set_paragraph_justification_code_at(
+    block: &[u8],
+    object: usize,
+    i: usize,
+    code: i64,
+) -> Result<Vec<u8>, Error> {
+    let j = Justification::from_code(code)
+        .ok_or_else(|| Error::Txt2(format!("not a justification: {code} (0..6)")))?;
+    set_paragraph_justification_at(block, object, i, j)
+}
+
+pub fn paragraph_justification_at(block: &[u8], object: usize, i: usize) -> Option<Justification> {
+    match paragraph_property_at(block, object, i, ParagraphProperty::Justification)? {
+        Value::Int(code) => Justification::from_code(code),
+        _ => None,
+    }
+}
+
+/// First-line indent of paragraph run `i` of text object `object`, points.
+pub fn set_paragraph_first_line_indent_at(
+    block: &[u8],
+    object: usize,
+    i: usize,
+    points: f32,
+) -> Result<Vec<u8>, Error> {
+    set_paragraph_property_at(
+        block,
+        object,
+        i,
+        ParagraphProperty::FirstLineIndent,
+        &Value::Real(f64::from(points)),
+    )
+}
+
+pub fn paragraph_first_line_indent_at(block: &[u8], object: usize, i: usize) -> Option<f32> {
+    paragraph_number_at(block, object, i, ParagraphProperty::FirstLineIndent)
+}
+
+/// Left (start) indent of paragraph run `i` of text object `object`, points.
+pub fn set_paragraph_start_indent_at(
+    block: &[u8],
+    object: usize,
+    i: usize,
+    points: f32,
+) -> Result<Vec<u8>, Error> {
+    set_paragraph_property_at(
+        block,
+        object,
+        i,
+        ParagraphProperty::StartIndent,
+        &Value::Real(f64::from(points)),
+    )
+}
+
+pub fn paragraph_start_indent_at(block: &[u8], object: usize, i: usize) -> Option<f32> {
+    paragraph_number_at(block, object, i, ParagraphProperty::StartIndent)
+}
+
+/// Right (end) indent of paragraph run `i` of text object `object`, points.
+pub fn set_paragraph_end_indent_at(
+    block: &[u8],
+    object: usize,
+    i: usize,
+    points: f32,
+) -> Result<Vec<u8>, Error> {
+    set_paragraph_property_at(
+        block,
+        object,
+        i,
+        ParagraphProperty::EndIndent,
+        &Value::Real(f64::from(points)),
+    )
+}
+
+pub fn paragraph_end_indent_at(block: &[u8], object: usize, i: usize) -> Option<f32> {
+    paragraph_number_at(block, object, i, ParagraphProperty::EndIndent)
+}
+
+/// Space before paragraph run `i` of text object `object`, points (`/5/4`).
+pub fn set_paragraph_space_before_at(
+    block: &[u8],
+    object: usize,
+    i: usize,
+    points: f32,
+) -> Result<Vec<u8>, Error> {
+    set_paragraph_property_at(
+        block,
+        object,
+        i,
+        ParagraphProperty::SpaceBefore,
+        &Value::Real(f64::from(points)),
+    )
+}
+
+pub fn paragraph_space_before_at(block: &[u8], object: usize, i: usize) -> Option<f32> {
+    paragraph_number_at(block, object, i, ParagraphProperty::SpaceBefore)
+}
+
+/// Space after paragraph run `i` of text object `object`, points (`/5/5`).
+pub fn set_paragraph_space_after_at(
+    block: &[u8],
+    object: usize,
+    i: usize,
+    points: f32,
+) -> Result<Vec<u8>, Error> {
+    set_paragraph_property_at(
+        block,
+        object,
+        i,
+        ParagraphProperty::SpaceAfter,
+        &Value::Real(f64::from(points)),
+    )
+}
+
+pub fn paragraph_space_after_at(block: &[u8], object: usize, i: usize) -> Option<f32> {
+    paragraph_number_at(block, object, i, ParagraphProperty::SpaceAfter)
+}
+
+/// Auto-leading fraction of paragraph run `i` of text object `object` (`/5/7`).
+pub fn set_paragraph_auto_leading_at(
+    block: &[u8],
+    object: usize,
+    i: usize,
+    fraction: f32,
+) -> Result<Vec<u8>, Error> {
+    if !(fraction.is_finite() && fraction > 0.0) {
+        return Err(Error::Txt2(format!(
+            "not an auto-leading fraction: {fraction}"
+        )));
+    }
+    set_paragraph_property_at(
+        block,
+        object,
+        i,
+        ParagraphProperty::AutoLeading,
+        &Value::Real(f64::from(fraction)),
+    )
+}
+
+pub fn paragraph_auto_leading_at(block: &[u8], object: usize, i: usize) -> Option<f32> {
+    paragraph_number_at(block, object, i, ParagraphProperty::AutoLeading)
+}
+
+/// Hanging punctuation of paragraph run `i` of text object `object` (`/5/21`).
+pub fn set_paragraph_hanging_punctuation_at(
+    block: &[u8],
+    object: usize,
+    i: usize,
+    on: bool,
+) -> Result<Vec<u8>, Error> {
+    set_paragraph_property_at(
+        block,
+        object,
+        i,
+        ParagraphProperty::HangingPunctuation,
+        &Value::Bool(on),
+    )
+}
+
+pub fn paragraph_hanging_punctuation_at(block: &[u8], object: usize, i: usize) -> Option<bool> {
+    match paragraph_property_at(block, object, i, ParagraphProperty::HangingPunctuation)? {
+        Value::Bool(b) => Some(b),
+        _ => None,
+    }
+}
+
+/// Every-line composer of paragraph run `i` of text object `object` (`/5/29`).
+pub fn set_paragraph_every_line_composer_at(
+    block: &[u8],
+    object: usize,
+    i: usize,
+    on: bool,
+) -> Result<Vec<u8>, Error> {
+    set_paragraph_property_at(
+        block,
+        object,
+        i,
+        ParagraphProperty::EveryLineComposer,
+        &Value::Bool(on),
+    )
+}
+
+pub fn paragraph_every_line_composer_at(block: &[u8], object: usize, i: usize) -> Option<bool> {
+    match paragraph_property_at(block, object, i, ParagraphProperty::EveryLineComposer)? {
+        Value::Bool(b) => Some(b),
+        _ => None,
+    }
+}
+
+/// [`set_paragraph_hyphenation`] for text object `object`.
+pub fn set_paragraph_hyphenation_at(
+    block: &[u8],
+    object: usize,
+    i: usize,
+    hyphenation: Hyphenation,
+) -> Result<Vec<u8>, Error> {
+    if !(hyphenation.zone_pt.is_finite() && hyphenation.zone_pt >= 0.0) {
+        return Err(Error::Txt2(format!(
+            "not a hyphenation zone: {}",
+            hyphenation.zone_pt
+        )));
+    }
+    for (prop, value) in [
+        (
+            ParagraphProperty::HyphenateWordSize,
+            hyphenation.words_longer_than,
+        ),
+        (
+            ParagraphProperty::HyphenateAfterFirst,
+            hyphenation.after_first,
+        ),
+        (
+            ParagraphProperty::HyphenateBeforeLast,
+            hyphenation.before_last,
+        ),
+        (ParagraphProperty::HyphenLimit, hyphenation.limit),
+    ] {
+        if value < 0 {
+            return Err(Error::Txt2(format!(
+                "negative hyphenation value {value} for {prop:?}"
+            )));
+        }
+    }
+    let mut out = block.to_vec();
+    out = set_paragraph_property_or_insert_at(
+        &out,
+        object,
+        i,
+        ParagraphProperty::Hyphenate,
+        &Value::Bool(hyphenation.hyphenate),
+    )?;
+    if !hyphenation.hyphenate {
+        return Ok(out);
+    }
+    out = set_paragraph_property_or_insert_at(
+        &out,
+        object,
+        i,
+        ParagraphProperty::HyphenateWordSize,
+        &Value::Int(hyphenation.words_longer_than),
+    )?;
+    out = set_paragraph_property_or_insert_at(
+        &out,
+        object,
+        i,
+        ParagraphProperty::HyphenateAfterFirst,
+        &Value::Int(hyphenation.after_first),
+    )?;
+    out = set_paragraph_property_or_insert_at(
+        &out,
+        object,
+        i,
+        ParagraphProperty::HyphenateBeforeLast,
+        &Value::Int(hyphenation.before_last),
+    )?;
+    out = set_paragraph_property_or_insert_at(
+        &out,
+        object,
+        i,
+        ParagraphProperty::HyphenLimit,
+        &Value::Int(hyphenation.limit),
+    )?;
+    out = set_paragraph_property_or_insert_at(
+        &out,
+        object,
+        i,
+        ParagraphProperty::HyphenationZone,
+        &Value::Real(f64::from(hyphenation.zone_pt)),
+    )?;
+    set_paragraph_property_or_insert_at(
+        &out,
+        object,
+        i,
+        ParagraphProperty::HyphenateCapitalWords,
+        &Value::Bool(hyphenation.capital_words),
+    )
+}
+
+/// [`paragraph_hyphenation`] for text object `object`.
+pub fn paragraph_hyphenation_at(block: &[u8], object: usize, i: usize) -> Option<Hyphenation> {
+    if paragraph_count_at(block, object).ok()? <= i {
+        return None;
+    }
+    let default = Hyphenation::default();
+    let int = |prop| match paragraph_property_at(block, object, i, prop) {
+        Some(Value::Int(v)) => Some(v),
+        _ => None,
+    };
+    let boolean = |prop, fallback| {
+        paragraph_property_at(block, object, i, prop)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(fallback)
+    };
+    Some(Hyphenation {
+        hyphenate: boolean(ParagraphProperty::Hyphenate, default.hyphenate),
+        words_longer_than: int(ParagraphProperty::HyphenateWordSize)
+            .unwrap_or(default.words_longer_than),
+        after_first: int(ParagraphProperty::HyphenateAfterFirst).unwrap_or(default.after_first),
+        before_last: int(ParagraphProperty::HyphenateBeforeLast).unwrap_or(default.before_last),
+        limit: int(ParagraphProperty::HyphenLimit).unwrap_or(default.limit),
+        zone_pt: paragraph_number_at(block, object, i, ParagraphProperty::HyphenationZone)
+            .unwrap_or(default.zone_pt),
+        capital_words: boolean(
+            ParagraphProperty::HyphenateCapitalWords,
+            default.capital_words,
+        ),
+    })
+}
+
+fn paragraph_number_at(
+    block: &[u8],
+    object: usize,
+    i: usize,
+    property: ParagraphProperty,
+) -> Option<f32> {
+    match paragraph_property_at(block, object, i, property)? {
         Value::Int(v) => Some(v as f32),
         Value::Real(v) => Some(v as f32),
         _ => None,

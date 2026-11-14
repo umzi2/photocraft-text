@@ -81,6 +81,13 @@ impl Value {
         }
     }
 
+    pub fn as_dict(&self) -> Option<&[(String, Value)]> {
+        match self {
+            Value::Dict(d) => Some(d),
+            _ => None,
+        }
+    }
+
     pub fn as_array(&self) -> Option<&[Value]> {
         match self {
             Value::Array(a) => Some(a),
@@ -308,7 +315,26 @@ fn fmt_number(v: f64) -> String {
         return format!("{v:.1}");
     }
     // Shortest round-trip form, as the ASL writer emits it: `.8`, not `0.8`.
-    let s = format!("{v}");
+    //
+    // EngineData numbers are 32-bit floats, and Photoshop's CoolType parser reads a
+    // number token into a short fixed buffer: a `f64` widened from `f32` prints its
+    // full binary expansion (`.800000011920929`, 17 characters) and a document whose
+    // `EngineData` carries such a token makes Photoshop abort the open with
+    // "Could not complete your request because of a program error." Print the
+    // shortest `f32` form whenever the value is exactly an `f32`, and keep any
+    // remaining token inside the parser's budget.
+    let narrowed = v as f32;
+    let mut s = if f64::from(narrowed) == v {
+        format!("{narrowed}")
+    } else {
+        format!("{v}")
+    };
+    if s.contains(['e', 'E']) || s.len() > 12 {
+        s = format!("{v:.6}");
+        while s.ends_with('0') && !s.ends_with(".0") {
+            s.pop();
+        }
+    }
     if let Some(rest) = s.strip_prefix("0.") {
         format!(".{rest}")
     } else if let Some(rest) = s.strip_prefix("-0.") {
@@ -399,3 +425,4 @@ fn write_value(out: &mut Vec<u8>, value: &Value, depth: usize) {
         }
     }
 }
+

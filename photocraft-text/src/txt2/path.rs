@@ -24,9 +24,27 @@ pub enum Value {
 }
 
 impl Value {
-    pub(super) fn as_bool(&self) -> Option<bool> {
+    /// The boolean this value holds, if it is one.
+    pub fn as_bool(&self) -> Option<bool> {
         match self {
             Value::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    /// The integer this value holds, if it is one.
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Value::Int(i) => Some(*i),
+            _ => None,
+        }
+    }
+
+    /// The number this value holds (integer or real), if it is one.
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Value::Int(i) => Some(*i as f64),
+            Value::Real(r) => Some(*r),
             _ => None,
         }
     }

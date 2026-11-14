@@ -86,7 +86,7 @@ pub fn shape(face: &Face<'_>, text: &str, style: &TextStyle) -> Vec<GlyphPos> {
 
     let mut out: Vec<GlyphPos> = Vec::with_capacity(text.chars().count());
     let mut pen = 0f32;
-    let mut prev_gid: Option<u16> = None;
+    let mut prev_gid: Option<(u16, char)> = None;
 
     for ch in text.chars() {
         if ch == '\r' || ch == '\n' {
@@ -97,10 +97,10 @@ pub fn shape(face: &Face<'_>, text: &str, style: &TextStyle) -> Vec<GlyphPos> {
         };
         let kern = match (style.kerning, prev_gid) {
             (_, None) => 0.0,
-            (Kerning::Metrics, Some(prev)) => face.kern_pair(prev, gid) as f32 * scale,
+            (Kerning::Metrics, Some((prev, _))) => face.kern_pair(prev, gid) as f32 * scale,
             (Kerning::Manual(v), Some(_)) => v as f32 / 1000.0 * style.size,
-            (Kerning::Optical, Some(prev)) => {
-                crate::optical::optical_pair(face, prev, gid, style.size)
+            (Kerning::Optical, Some((prev, prev_ch))) => {
+                crate::optical::optical_pair_chars(face, prev, gid, style.size, prev_ch, ch)
             }
         };
         pen += kern * hscale;
@@ -119,7 +119,7 @@ pub fn shape(face: &Face<'_>, text: &str, style: &TextStyle) -> Vec<GlyphPos> {
             nominal_advance: advance,
         });
         pen += advance;
-        prev_gid = Some(gid);
+        prev_gid = Some((gid, ch));
     }
 
     // Convert absolute pen positions into forward deltas.

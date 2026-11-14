@@ -31,10 +31,10 @@
 
 use std::collections::BTreeMap;
 
+use photocraft_psd::PsdFile;
 use photocraft_text::psd::{
     LayerSpec, ParagraphSpec, RunSpec as AuthorRun, author, refresh_text_layer, with_engine_data,
 };
-use photocraft_psd::PsdFile;
 use photocraft_text::runs::{self, ParagraphFormat, ParagraphRun, RunStyle};
 use photocraft_text::txt2::{
     self, Capitalization, Hyphenation, Justification, KerningType, OLD_STYLE_ON, ParagraphProperty,
@@ -209,8 +209,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             paragraph: author_paragraph(&spec.paragraph),
             aa: spec.aa,
             frame: None,
+            shape: None,
+            orientation: None,
+            transform: None,
             atlas: None,
             fractional: None,
+            ..LayerSpec::default()
         },
         &store,
     )?;
@@ -427,6 +431,7 @@ fn author_run(run: &Run) -> AuthorRun {
             .flatten()
             .map(KerningType::engine_auto_kerning),
         kerning: None,
+        kerning_mode: None,
         bold: run.faux_bold.unwrap_or(false),
         italic: run.faux_italic.unwrap_or(false),
         underline: parse_underline(run.underline.as_deref())
@@ -436,6 +441,12 @@ fn author_run(run: &Run) -> AuthorRun {
         strikethrough: run.strike.unwrap_or(false),
         all_caps: caps == Some(Capitalization::AllCaps),
         small_caps: caps == Some(Capitalization::SmallCaps),
+        old_style: run.old_style.unwrap_or(false),
+        ligatures: run.ligatures,
+        alternate_ligatures: run.alternate_ligatures,
+        no_break: run.no_break,
+        language: run.language,
+        ..AuthorRun::default()
     }
 }
 
@@ -448,12 +459,21 @@ fn author_paragraph(para: &Paragraph) -> ParagraphSpec {
         first_line_indent: para.first_line_indent,
         start_indent: para.start_indent,
         end_indent: para.end_indent,
-        space_before: 0.0,
-        space_after: 0.0,
+        space_before: para.space_before,
+        space_after: para.space_after,
         auto_leading: para.auto_leading,
         word_spacing: para.word_spacing,
         letter_spacing: para.letter_spacing,
         glyph_scaling: para.glyph_scaling,
+        hanging_punctuation: para.hanging,
+        hyphenate: para.hyphenate,
+        hyphenate_words_longer_than: para.hyphenate_words_longer_than,
+        hyphenate_after_first: para.hyphenate_after_first,
+        hyphenate_before_last: para.hyphenate_before_last,
+        hyphenate_limit: para.hyphen_limit,
+        hyphenate_zone: para.hyphenation_zone,
+        hyphenate_capital_words: para.hyphenate_capital_words,
+        ..ParagraphSpec::default()
     }
 }
 
