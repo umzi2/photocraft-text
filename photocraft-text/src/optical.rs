@@ -237,12 +237,26 @@ fn facing_gap(face: &Face<'_>, a: u16, b: u16) -> Option<f32> {
     }
     let band_h = (y1 - y0) / BANDS as f32;
     let mut gap = f32::INFINITY;
-    for i in 0..BANDS {
-        let y = y0 + (i as f32 + 0.5) * band_h;
+    let mut sample = |y: f32, gap: &mut f32| {
         let (Some((_, ar)), Some((bl, _))) = (row_extent(&left, y), row_extent(&right, y)) else {
-            continue;
+            return;
         };
-        gap = gap.min(bl - ar);
+        *gap = gap.min(bl - ar);
+    };
+    for i in 0..BANDS {
+        sample(y0 + (i as f32 + 0.5) * band_h, &mut gap);
+    }
+    // Uniform rows can miss a thin horizontal feature -- most importantly the `f` crossbar,
+    // whose left overhang is the facing edge against a preceding round letter. Sample every
+    // outline's own y as well, so a horizontal segment is measured at its own row.
+    for segments in [&left, &right] {
+        for s in segments.iter() {
+            for y in [s.y0, s.y1] {
+                if y > y0 && y < y1 {
+                    sample(y, &mut gap);
+                }
+            }
+        }
     }
     gap.is_finite().then_some(gap)
 }
