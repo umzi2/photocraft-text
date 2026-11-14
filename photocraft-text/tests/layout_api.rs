@@ -750,21 +750,21 @@ fn vertical_soft_wraps_when_the_column_height_runs_out() {
         (size * 3.0, size * 3.0),
     )
     .expect("vertical box layout");
-    // Three em of height hold two glyphs per column (the column step is the
-    // 1.2-em leading), so the eight glyphs would wrap into four columns
-    // (2 + 2 + 2 + 2); the fourth column's em cell lies entirely left of the
-    // three-em-wide frame, so Photoshop's stop rule keeps three (2 + 2 + 2)
-    // and drops the last two glyphs. Every kept column is composed: a vertical
-    // box has no width clip (a Photoshop box-width sweep down to 4 pt keeps
-    // all five columns, `out/verify/txt2work/sweep_result.json`), and the
-    // column anchored at the box's right edge deliberately overhangs it.
+    // Three em of height hold three glyphs per column: the cells step one em
+    // *along* the column, while the 1.2-em leading only sets the pitch
+    // *between* columns. The eight glyphs wrap into 3 + 3 + 2, and all three
+    // columns' em cells intersect the three-em-wide frame, so Photoshop's stop
+    // rule keeps all three. (Measured: `out/verify/tbo_synth/u12_v3_pscache.psd`
+    // packs five glyphs into 179 pt at 30 pt with leading 36 and with leading 3
+    // alike, and six into 200 pt; `Untitled-17.psd` composes its 33 pt column
+    // as 5 + 5 + 5 + 5 + 2 in 179.648 pt.)
     assert_eq!(short.lines.len(), 3, "three wrapped columns");
-    assert_eq!(&text[short.lines[2].range.clone()], "EF");
+    assert_eq!(&text[short.lines[2].range.clone()], "GH");
     assert!(
         short.lines[1].x0 < short.lines[0].x0,
         "wrapped columns do not advance left"
     );
-    assert_eq!(&text[short.lines[0].range.clone()], "AB");
+    assert_eq!(&text[short.lines[0].range.clone()], "ABC");
 }
 
 /// A vertical paragraph box anchors its first column at the box's **right**
@@ -792,10 +792,13 @@ fn a_vertical_box_anchors_its_columns_at_the_right_edge() {
     .expect("vertical box layout");
     assert_eq!(
         layout.lines.len(),
-        3,
-        "four em of height hold three glyphs per column (the column step is the 1.2-em leading)"
+        2,
+        "four em of height hold four glyphs per column (the cells step one em along the column; the 1.2-em leading only sets the pitch between columns)"
     );
-    // (the 1.2-em step still fits both columns inside an eight-em box)
+    // (the 1.2-em *pitch* still fits both columns inside an eight-em box; the
+    // wrap itself counted the four em cells, not the leading — see the
+    // `u12_v3_pscache.psd` and `Untitled-17.psd` measurements in the soft-wrap
+    // test above)
     // A column is one em wide but the column *step* is the leading (Photoshop
     // advances columns by the line height, measured on `hotfix_u12.psd`: 36 px
     // at 30 pt with `AutoLeading 1.2`, 150 px at 5.0, 3 px at 0.1); the first
@@ -977,26 +980,29 @@ fn vertical_box_centres_each_column_along_the_frame_for_center_justification() {
         (200.0, 200.0),
     )
     .expect("vertical box layout");
-    // The model's run sheet carries an explicit `Leading 38` (AutoLeading
-    // false), so the 200 pt frame holds floor(200 / 38) = 5 glyphs per column:
-    // "AVATAR" wraps into "AVATA" + "R" and "Ty" keeps its own column.
-    assert_eq!(layout.lines.len(), 3, "two paragraphs, three columns");
+    // The cells step one em along the column, so the 200 pt frame holds all
+    // six glyphs of "AVATAR" (6 × 24 = 144 pt) in one column; the model's
+    // explicit `Leading 38` (AutoLeading false) is only the pitch *between*
+    // columns, not the wrap cell. (Photoshop's composed caches: 179 pt at
+    // 30 pt holds five glyphs with leading 36 and with leading 3 alike.)
+    assert_eq!(layout.lines.len(), 2, "two paragraphs, two columns");
     // NotoSans-Regular cap 714/1000 at 24 pt -> first_off = (24 + 17.136)/2.
     let first_off = (24.0 + 0.714 * 24.0) * 0.5;
     let first_column = layout.caret(0).y0;
     let second_column = layout.caret(7).y0; // 'T' of "Ty", after "AVATAR\r"
     assert!(
-        (first_column - (first_off + 40.0)).abs() < 0.02,
-        "column 0 along start {first_column}, want {} (frame 200, extent 120)",
-        first_off + 40.0
+        (first_column - (first_off + 28.0)).abs() < 0.02,
+        "column 0 along start {first_column}, want {} (frame 200, extent 144)",
+        first_off + 28.0
     );
     assert!(
         (second_column - (first_off + 76.0)).abs() < 0.02,
         "column 2 along start {second_column}, want {} (frame 200, extent 48)",
         first_off + 76.0
     );
-    // The centring offsets differ by the column extents' difference / 2.
-    assert!((second_column - first_column - 36.0).abs() < 0.02);
+    // The centring offsets differ by the column extents' difference / 2:
+    // (144 - 48) / 2 = 48.
+    assert!((second_column - first_column - 48.0).abs() < 0.02);
 }
 
 /// Photoshop stops *composing* a boxed vertical line at the first column whose

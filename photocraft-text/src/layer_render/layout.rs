@@ -682,7 +682,11 @@ fn empty_row(prepared: &Prepared<'_>, empty: &EmptyParagraph) -> Row {
 
 /// Builds the public layout of a horizontal (point/box/area) layer.
 pub(super) fn layout_of(prepared: &Prepared<'_>, text: &str, anchor: (f32, f32)) -> TextLayout {
-    let first_baseline = prepared.lines.first().map(|l| l.baseline).unwrap_or(0.0);
+    // Photoshop's first baseline is the frame's, not the first drawn line's: a
+    // leading empty paragraph still occupies a line, so every drawn line sits
+    // below this reference (the first drawn line's baseline when the first
+    // paragraph has text). The renderer flips around the same value.
+    let first_baseline = prepared.first_baseline;
     let mut glyphs = Vec::new();
     for line in &prepared.lines {
         for (glyph, attrs) in line.glyphs.iter().zip(&line.attrs) {

@@ -188,6 +188,7 @@ pub fn render_text_layer_with_atlases(
         atlases,
         None,
         None,
+        Some(layout.first_baseline),
     )
 }
 
@@ -220,6 +221,10 @@ pub(super) struct Prepared<'a> {
     pub(super) spec: LayerTextStyle,
     pub(super) lines: Vec<crate::area::Line>,
     pub(super) empty: Vec<crate::area::EmptyParagraph>,
+    /// The layout's first paragraph baseline, before empty-paragraph stepping;
+    /// [`super::layout::layout_of`] and [`paint`] flip `y` around it so a caret
+    /// and the pixels agree on the frame's first baseline.
+    pub(super) first_baseline: f32,
     pub(super) aa: crate::raster::AntiAlias,
 }
 
@@ -417,6 +422,7 @@ fn prepare_impl<'a>(
         spec,
         lines: layout.lines,
         empty: layout.empty,
+        first_baseline: layout.first_baseline,
         aa,
     })
 }
@@ -437,6 +443,7 @@ fn render_prepared(
         store.atlases(),
         target,
         warp,
+        Some(prepared.first_baseline),
     )
 }
 

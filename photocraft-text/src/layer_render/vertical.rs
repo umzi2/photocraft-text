@@ -170,6 +170,9 @@ fn vertical_impl(
         store.atlases(),
         target,
         None,
+        // Vertical columns carry no first-baseline offset: the paint rows are
+        // the inverted layout x, and `Line::baseline` is 0 for every column.
+        None,
     )
 }
 
@@ -325,50 +328,49 @@ fn vertical_prepare<'a>(
             .max(f32::EPSILON)
     };
     // A column that runs past the box height starts a new one: soft wrap, with
-    // the same column advance as a hard break. Photoshop wraps by the column
-    // *pitch* (the paragraph leading), not by the em: a 200 pt box at 24 pt
-    // with `AutoLeading 1.2` holds floor(200 / 28.8) = 6 cells, so
-    // `"abc def ghi"` starts its second column after "abc def" (measured:
-    // Photoshop's stored rect for that layer is 139 = 6 x 24 - ink crop; with
-    // the em rule it packed 8 letters and stored 186).
+    // the same column advance as a hard break. The wrap counts the glyphs'
+    // **along extent**, not the column pitch: Photoshop advances the *columns*
+    // by the leading, but the glyphs inside a column step one em and the soft
+    // wrap only starts a new column when those ems no longer fit the frame.
+    // Evidence: `out/verify/tbo_synth/u12_v3_pscache.psd` (30 pt) packs 5
+    // glyphs into a 179 pt frame both with leading 36 and with leading 3, and 6
+    // into a 200 pt frame; `Untitled-17.psd`'s 33 pt vertical object packs
+    // 5+5+5+5+2 into 179.64844 pt (165 = 5 em, while the leading rule would
+    // give 4). U+0020 consumes its own glyph advance, not an em.
     let mut columns: Vec<(
         Vec<crate::layout::GlyphPos>,
         Vec<runs::GlyphAttrs>,
         usize,
         usize,
     )> = Vec::new();
-    for (group_index, (glyphs, attrs, start, end)) in groups.into_iter().enumerate() {
-        let chunk = box_size
-            .map(|(_, height)| ((height / pitch_of(group_index)).floor() as usize).max(1))
-            .unwrap_or(usize::MAX);
-        if glyphs.is_empty() || chunk >= glyphs.len() {
+    for (glyphs, attrs, start, end) in groups {
+        if glyphs.is_empty() {
             columns.push((glyphs, attrs, start, end));
             continue;
         }
-        // A box wraps when the column's *letters* fill the height: U+0020
-        // advances nothing, so it must not consume a cell at the break.
+        let height = box_size.map(|(_, height)| height);
         let mut chunk_glyphs: Vec<crate::layout::GlyphPos> = Vec::new();
         let mut chunk_attrs: Vec<runs::GlyphAttrs> = Vec::new();
-        let mut cells = 0usize;
-        let total = glyphs.len();
-        for (i, (glyph, attr)) in glyphs.into_iter().zip(attrs).enumerate() {
+        let mut used = 0.0f32;
+        for (glyph, attr) in glyphs.into_iter().zip(attrs) {
+            if let Some(height) = height {
+                let run_size = style_runs.get(attr.run).and_then(|r| r.size).unwrap_or(size);
+                let advance = along_advance(glyph.ch, run_size, glyph.advance);
+                if !chunk_glyphs.is_empty() && used + advance > height + 0.01 {
+                    let chunk_start = chunk_attrs.first().map_or(start, |a| a.source.0);
+                    let chunk_end = chunk_attrs.last().map_or(end, |a| a.source.1);
+                    columns.push((
+                        std::mem::take(&mut chunk_glyphs),
+                        std::mem::take(&mut chunk_attrs),
+                        chunk_start,
+                        chunk_end,
+                    ));
+                    used = 0.0;
+                }
+                used += advance;
+            }
             chunk_glyphs.push(glyph);
             chunk_attrs.push(attr);
-            if chunk_glyphs.last().is_some_and(|g| g.ch != ' ') {
-                cells += 1;
-            }
-            let last = i + 1 == total;
-            if !last && cells >= chunk {
-                let chunk_start = chunk_attrs.first().map_or(start, |a| a.source.0);
-                let chunk_end = chunk_attrs.last().map_or(end, |a| a.source.1);
-                columns.push((
-                    std::mem::take(&mut chunk_glyphs),
-                    std::mem::take(&mut chunk_attrs),
-                    chunk_start,
-                    chunk_end,
-                ));
-                cells = 0;
-            }
         }
         if !chunk_glyphs.is_empty() {
             let chunk_start = chunk_attrs.first().map_or(start, |a| a.source.0);

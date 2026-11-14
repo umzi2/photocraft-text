@@ -165,6 +165,15 @@ pub struct AreaLayout {
     pub lines: Vec<Line>,
     /// Empty paragraphs in text order, with the baseline a caret must use.
     pub empty: Vec<EmptyParagraph>,
+    /// The first paragraph's first baseline in the layout's y-up space, before
+    /// any paragraph stepping: `origin.1 + first_baseline_offset(size)`.
+    ///
+    /// Photoshop composes the frame's first baseline here and counts every
+    /// paragraph (empty ones included) down from it. A leading empty paragraph
+    /// therefore moves the first *drawn* line one leading below this value, so
+    /// painting and the caret must flip `y` around this baseline instead of
+    /// around `lines.first().baseline` when the first paragraph is empty.
+    pub first_baseline: f32,
 }
 
 impl AreaLayout {
@@ -1023,6 +1032,7 @@ fn layout_paragraphs(
     let first_off = first_baseline_offset(ascender_ratio, style.size);
     let mut out = AreaLayout::default();
     let mut baseline = origin.1 + first_off;
+    out.first_baseline = baseline;
     let mut from_top = first_off;
     let mut prev: Option<ParagraphStyle> = None;
     for (pi, para) in paras.iter().enumerate() {
@@ -1048,8 +1058,13 @@ fn layout_paragraphs(
                 x: origin.0 + pstyle.start_indent + pstyle.first_line_indent,
                 leading: lead,
             });
-            baseline -= lead;
-            from_top += lead;
+            // The empty paragraph occupies one line at `baseline`; the next
+            // paragraph's own step (above) is the one leading from this line
+            // down to its first baseline. Advancing again here would make every
+            // paragraph after an empty one sit one leading too low, and the
+            // leading would be counted twice (Photoshop recomposes
+            // `\rA\rB` with B one leading below A, measured in the Txt2 cache
+            // of `Untitled-17.psd` layer `sdfdsfLasdsad`).
             continue;
         }
         let base_avail = width - pstyle.start_indent - pstyle.end_indent;

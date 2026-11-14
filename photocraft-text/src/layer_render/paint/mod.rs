@@ -114,6 +114,11 @@ pub(super) fn paint(
     // Warped layers draw analytical outlines through this map instead of
     // blitting Atlas cells; `None` keeps the byte-exact atlas path.
     warp: Option<&WarpDraw<'_>>,
+    // The layout's first *paragraph* baseline (y-up), the one the layer anchors
+    // on. `None` uses the first drawn line, which is right only when no empty
+    // paragraph precedes it: an empty paragraph is a line too, and Photoshop
+    // counts every following baseline down from the frame's first one.
+    first_baseline: Option<f32>,
 ) -> Result<LayerPixels, Error> {
     let box_w = spec.box_size.0.max(1.0).ceil();
     let box_h = spec.box_size.1.max(1.0).ceil();
@@ -152,7 +157,7 @@ pub(super) fn paint(
             (box_h as i32 + margin * 2).max(1) as u32,
         ),
     };
-    let first_baseline = lines.first().map(|l| l.baseline).unwrap_or(0.0);
+    let first_baseline = first_baseline.unwrap_or_else(|| lines.first().map(|l| l.baseline).unwrap_or(0.0));
     // Device-space pen origin: `col_base + g.x` / `row_base - g.y` are the
     // canvas coordinates every glyph is drawn at.
     let (col_base, row_base) = match target {
