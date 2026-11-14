@@ -26,17 +26,130 @@
 use crate::font::Face;
 use crate::outline::glyph_contours;
 
-/// Target ink gap the model pulls a pair towards, as a fraction of the em.
+/// Fallback target ink gap, as a fraction of the em, for a face outside
+/// [`OPTICAL_TARGETS`].
 pub const OPTICAL_TARGET_GAP: f32 = 0.0425;
+
+/// Photoshop's optical target ink gap at 24 pt, per font, keyed by the same
+/// five-field metric signature `layer_render::vertical_b0_ratio` uses.
+///
+/// Measured on Photoshop's own recomposition of 730 pairs x 11 fonts
+/// (`out/verify/sync/optical-targets.md`, `out/verify/sync/spacing/targets.json`):
+/// the target is a *per-font* constant (0.0616 em for Impact to 0.1166 for
+/// Courier New), which is why a single value cannot serve every face — with the
+/// old universal 0.0425 em, `ll` in Noto Sans came out at -4.04 pt where
+/// Photoshop composes -2.15 pt.
+///
+/// The remaining error of this table is pair-specific, not font-level: at 24 pt
+/// over the same corpus the model leaves sd 0.21 px / max 0.94 px, and the worst
+/// classes are punctuation (`,A`, `.A`) and heavy diagonals (`AV`, `TA`). The
+/// table is a measured stopgap for Photoshop's undocumented optical kerning, not
+/// its algorithm; see `out/verify/sync/spacing-spec.md` §6.1 for the open RE.
+pub const OPTICAL_TARGETS: &[(OpticalSignature, f32)] = &[
+    // Impact
+    ((2048, 2066, -432, None, None), 0.0616404),
+    // Trebuchet MS
+    ((2048, 1923, -455, None, None), 0.0638117),
+    // Times New Roman
+    ((2048, 1825, -443, None, None), 0.0671740),
+    // Georgia
+    ((2048, 1878, -449, None, None), 0.0716090),
+    // Myriad Pro
+    ((1000, 750, -250, Some(674), Some(484)), 0.0731000),
+    // Arial
+    ((2048, 1854, -434, None, None), 0.0799569),
+    // Arial Black
+    ((2048, 2254, -634, None, None), 0.0849948),
+    // Comic Sans MS
+    ((2048, 2257, -597, None, None), 0.0991394),
+    // Verdana
+    ((2048, 2059, -430, None, None), 0.1033544),
+    // Noto Sans
+    ((1000, 1069, -293, Some(714), Some(536)), 0.1150145),
+    // Courier New
+    ((2048, 1705, -615, None, None), 0.1165914),
+];
+
+/// `(unitsPerEm, hhea.ascender, hhea.descender, OS/2 cap height, OS/2 x-height)`.
+pub type OpticalSignature = (u16, i16, i16, Option<i16>, Option<i16>);
+
+/// Photoshop's optical target gap scales with the point size: anchors measured on
+/// Myriad Pro over 20 pairs at 8/12/18/24/36/48/72 pt, normalised to 24 pt.
+///
+/// The curve is Photoshop's own: small sizes keep more air (1.75x the 24 pt gap at
+/// 8 pt) and display sizes tighten (0.46x at 72 pt), i.e. the optical value is not
+/// an em constant (`out/verify/sync/spacing-spec.md` §2.2).
+pub const OPTICAL_SIZE_FACTOR: &[(f32, f32)] = &[
+    (8.0, 1.7514),
+    (12.0, 1.1436),
+    (18.0, 1.0709),
+    (24.0, 1.0000),
+    (36.0, 0.8622),
+    (48.0, 0.7258),
+    (72.0, 0.4597),
+];
 /// Share of the distance to [`OPTICAL_TARGET_GAP`] the model closes.
-pub const OPTICAL_GAP_FACTOR: f32 = 0.475;
+///
+/// Per-font least squares against Photoshop's own recomposition of 730 pairs x 10 fonts at
+/// 24 pt put the closure at 0.41-0.50; the shared value 0.44 is the fit
+/// (`out/verify/sync/spacing-spec.md` §2, `out/verify/sync/spacing/`).
+pub const OPTICAL_GAP_FACTOR: f32 = 0.44;
 /// Largest correction the model may apply to one pair, as a fraction of the em.
-pub const OPTICAL_CLAMP: f32 = 0.0275;
+///
+/// Photoshop's optical values reach -0.18 em on punctuation/diagonal classes (`.V` in Courier
+/// New is -4.0632 pt at 24 pt) and about -0.19 em on the heaviest diagonals, so a 0.0275 em
+/// cap (fitted to lower-case text) clipped them. Raising it is only safe together with the
+/// per-font target above: with the universal 0.0425 em target the clamp was the only thing
+/// holding lower-case pairs in place (`ll` in Noto Sans overshot to -4.04 pt against
+/// Photoshop's -2.15); with [`optical_target_gap`] the same pair lands at -3.71 pt.
+pub const OPTICAL_CLAMP: f32 = 0.25;
 /// Rows sampled across the band the two glyphs share.
 const BANDS: usize = 48;
 /// Line segments each outline is flattened into before measuring; curves are
 /// sampled this many times.
 const FLATTEN_STEPS: usize = 12;
+
+/// The five-field metric signature of a face, the key of [`OPTICAL_TARGETS`].
+pub fn optical_signature(face: &Face<'_>) -> OpticalSignature {
+    (
+        face.units_per_em(),
+        face.hhea.ascender,
+        face.hhea.descender,
+        face.os2.and_then(|o2| o2.s_cap_height),
+        face.os2.and_then(|o2| o2.s_x_height),
+    )
+}
+
+/// The measured optical target gap of `size` for an unlisted face.
+pub fn optical_target_gap(face: &Face<'_>, size: f32) -> f32 {
+    let base = OPTICAL_TARGETS
+        .iter()
+        .find(|(known, _)| *known == optical_signature(face))
+        .map(|(_, gap)| *gap)
+        .unwrap_or(OPTICAL_TARGET_GAP);
+    base * optical_size_factor(size)
+}
+
+/// Photoshop's optical size factor at `size`: piecewise-linear over
+/// [`OPTICAL_SIZE_FACTOR`], clamped to the outer anchors.
+pub fn optical_size_factor(size: f32) -> f32 {
+    let table = OPTICAL_SIZE_FACTOR;
+    if !(size.is_finite() && size > 0.0) {
+        return 1.0;
+    }
+    let (first_size, first) = table[0];
+    if size <= first_size {
+        return first;
+    }
+    for window in table.windows(2) {
+        let ((s0, f0), (s1, f1)) = (window[0], window[1]);
+        if size <= s1 {
+            let t = (size - s0) / (s1 - s0);
+            return f0 + (f1 - f0) * t;
+        }
+    }
+    table[table.len() - 1].1
+}
 
 /// Optical kerning adjustment for `a` followed by `b`, in points (negative
 /// tightens).
@@ -48,9 +161,18 @@ pub fn optical_pair(face: &Face<'_>, a: u16, b: u16, size: f32) -> f32 {
     let Some(gap) = facing_gap(face, a, b) else {
         return 0.0;
     };
-    let target = OPTICAL_TARGET_GAP * upm;
+    let target = optical_target_gap(face, size) * upm;
     let clamp = OPTICAL_CLAMP * upm;
-    (OPTICAL_GAP_FACTOR * (target - gap)).clamp(-clamp, clamp) / upm * size
+    let em = (OPTICAL_GAP_FACTOR * (target - gap)).clamp(-clamp, clamp) / upm;
+    // Photoshop's cache stores the value as an exact multiple of 1e-4 em (724/724 measured
+    // pairs), so the engine's own output is quantised the same way before it is scaled to
+    // points.
+    em_quantum(em) * size
+}
+
+/// Round an em fraction to Photoshop's 1e-4 em optical quantum.
+pub fn em_quantum(v: f32) -> f32 {
+    (v * 1.0e4).round() / 1.0e4
 }
 
 /// Largest correction a class-scaled pair may take, as a fraction of the em.
@@ -94,7 +216,8 @@ pub fn optical_pair_chars(face: &Face<'_>, a: u16, b: u16, size: f32, ca: char, 
     let Some(gap) = facing_gap(face, a, b) else {
         return 0.0;
     };
-    let closure = OPTICAL_GAP_FACTOR * (OPTICAL_TARGET_GAP * upm - gap) / upm * size;
+    let target = optical_target_gap(face, size) * upm;
+    let closure = em_quantum(OPTICAL_GAP_FACTOR * (target - gap) / upm) * size;
     (closure * optical_class_factor(ca, cb)).clamp(-OPTICAL_MAX * size, 0.0)
 }
 

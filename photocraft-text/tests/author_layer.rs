@@ -632,6 +632,120 @@ fn per_paragraph_sheets_and_cjk_options_reach_both_copies() {
 }
 
 #[test]
+fn an_unhyphenated_paragraph_writes_photoshop_hyphenation_defaults() {
+    // Photoshop always writes the engine's hyphenation defaults even when the
+    // paragraph has hyphenation off: `HyphenatedWordSize 6`, `PreHyphen 2`,
+    // `PostHyphen 2`, `ConsecutiveHyphens 8`, `Zone 36`. Zeroing them on an
+    // unhyphenated paragraph leaves a sheet Photoshop never writes.
+    let mut file = fixture("plain_latin.bin");
+    let index = text_layer(&file);
+    let spec = LayerSpec {
+        text: "Hyphenation defaults".into(),
+        runs: vec![RunSpec {
+            len: 21,
+            ..Default::default()
+        }],
+        paragraph: ParagraphSpec::default(),
+        paragraphs: Vec::new(),
+        aa: None,
+        frame: None,
+        shape: None,
+        orientation: None,
+        transform: None,
+        atlas: None,
+        fractional: None,
+        preserve_trailing_break: false,
+    };
+    author_layer(&mut file, index, &spec, &store()).expect("author");
+    let ed =
+        photocraft_text::engine_data::parse(&file.text_layer_engine_data(index).unwrap().unwrap())
+            .expect("EngineData");
+    let props = ed
+        .get("EngineDict")
+        .and_then(|d| d.get("ParagraphRun"))
+        .and_then(|p| p.get("RunArray"))
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.first())
+        .and_then(|r| r.get("ParagraphSheet"))
+        .and_then(|s| s.get("Properties"))
+        .expect("paragraph properties");
+    let int = |key: &str| props.get(key).and_then(|v| v.as_i64());
+    assert_eq!(
+        props.get("AutoHyphenate").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    assert_eq!(int("HyphenatedWordSize"), Some(6));
+    assert_eq!(int("PreHyphen"), Some(2));
+    assert_eq!(int("PostHyphen"), Some(2));
+    assert_eq!(int("ConsecutiveHyphens"), Some(8));
+    assert!(
+        matches!(
+            props.get("Zone"),
+            Some(photocraft_text::engine_data::Value::Float(zone)) if *zone == 36.0
+        ),
+        "Zone: {:?}",
+        props.get("Zone")
+    );
+}
+
+#[test]
+fn justification_codes_match_photoshop() {
+    // Measured with seven Photoshop-authored layers, one per alignment control
+    // (`out/verify/sync/justify_probe.py`): `Txt2` `/5/0` and `EngineData`
+    // `Justification` are the same code space and it is a bijection:
+    // 0 left, 1 right, 2 centre, 3 justify-last-left, 4 justify-last-right,
+    // 5 justify-last-centre, 6 justify-all.
+    for code in 0..=6i64 {
+        let mut file = fixture("plain_latin.bin");
+        let index = text_layer(&file);
+        let spec = LayerSpec {
+            text: "Justify".into(),
+            runs: vec![RunSpec {
+                len: 8,
+                ..Default::default()
+            }],
+            paragraph: ParagraphSpec {
+                justification: code,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        author_layer(&mut file, index, &spec, &store()).expect("author");
+        let block = file.txt2().expect("Txt2").to_vec();
+        assert_eq!(
+            txt2::paragraph_justification_at(&block, 0, 0)
+                .map(photocraft_text::txt2::Justification::code),
+            Some(code),
+            "Txt2 /5/0 for code {code}"
+        );
+        let ed = photocraft_text::engine_data::parse(
+            &file.text_layer_engine_data(index).unwrap().unwrap(),
+        )
+        .expect("EngineData");
+        let engine = ed
+            .get("EngineDict")
+            .and_then(|d| d.get("ParagraphRun"))
+            .and_then(|p| p.get("RunArray"))
+            .and_then(|a| a.as_array())
+            .and_then(|a| a.first())
+            .and_then(|r| r.get("ParagraphSheet"))
+            .and_then(|s| s.get("Properties"))
+            .and_then(|p| p.get("Justification"))
+            .and_then(|v| v.as_i64());
+        assert_eq!(
+            engine,
+            Some(code),
+            "EngineData Justification for code {code}"
+        );
+        let back = photocraft_text::psd::read_layer(&file, index).expect("read back");
+        assert_eq!(
+            back.paragraph.justification, code,
+            "read_layer keeps justification {code}"
+        );
+    }
+}
+
+#[test]
 fn manual_kerning_uses_photoshop_fixed_point_encoding() {
     // `Txt2` `/6/10` is 16.16 fixed point (kern / 65536), not the 1/1000 em the
     // model and `EngineData` use: Photoshop stores manual kern 100 as `0.00153`
@@ -678,12 +792,32 @@ fn manual_kerning_uses_photoshop_fixed_point_encoding() {
     let read = photocraft_text::psd::read_layer(&file, index).expect("read");
     assert_eq!(read.runs[0].kerning, Some(80));
     assert_eq!(read.runs[0].kerning_mode, Some(0));
-    // `EngineData` keeps the 1/1000 em integer.
+    // `EngineData` is the mode mirror only: Photoshop writes `AutoKerning:
+    // true` and `Kerning: 0` for every mode, manual included, and keeps the
+    // amount in `Txt2` `/6/10` (writer-parity oracle: manual 100 recomposed to
+    // `Kerning: 0`); the reader therefore takes the amount from `Txt2`.
     let ed =
         photocraft_text::engine_data::parse(&file.text_layer_engine_data(index).unwrap().unwrap())
             .expect("EngineData");
-    let styles = photocraft_text::runs::from_engine_data(&ed);
-    assert_eq!(styles[0].kerning, Some(80));
+    let sheet = ed
+        .get("EngineDict")
+        .and_then(|d| d.get("StyleRun"))
+        .and_then(|s| s.get("RunArray"))
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.first())
+        .and_then(|r| r.get("StyleSheet"))
+        .and_then(|s| s.get("StyleSheetData"))
+        .expect("style sheet");
+    assert_eq!(
+        sheet.get("Kerning").and_then(|v| v.as_i64()),
+        Some(0),
+        "EngineData Kerning is the pair-kern mirror, 0 for a manual amount"
+    );
+    assert_eq!(
+        sheet.get("AutoKerning").and_then(|v| v.as_bool()),
+        Some(true),
+        "Photoshop writes AutoKerning true for every mode"
+    );
     // Re-authoring the same spec leaves the block byte-identical.
     let before = block.clone();
     author_layer(&mut file, index, &spec, &store()).expect("re-author");
@@ -782,10 +916,7 @@ fn a_frame_change_patches_the_engine_box_bounds() {
         };
         author_layer(&mut file, index, &spec, &store()).expect("author");
         let tysh = photocraft_psd::TySh::from_bytes(
-            &file.layers()[index]
-                .block(b"TySh")
-                .expect("TySh")
-                .data,
+            &file.layers()[index].block(b"TySh").expect("TySh").data,
         )
         .expect("parse TySh");
         let raw = match tysh.descriptor.descriptor.get("EngineData") {
@@ -849,16 +980,44 @@ fn auto_leading_round_trips_as_a_ratio() {
             auto_leading: auto,
             ..Default::default()
         }],
-        paragraph: ParagraphSpec { auto_leading: 1.2, ..Default::default() },
+        paragraph: ParagraphSpec {
+            auto_leading: 1.2,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
-    // Auto leading on: Photoshop's own form - `AutoLeading` true, the absolute
-    // `Leading` neutral 0 - and the ratio lives in the paragraph sheet.
+    // Auto leading on: Photoshop 20.0.2's own form (`10_all_features.psd`,
+    // run sheets: 30 pt -> 36.0, 26 -> 31.2, 22 -> 26.4) is `AutoLeading`
+    // true plus the *computed* line height in `Leading`, while the resource
+    // default sheets keep 0. The model stays ratio-based: the reader must not
+    // take the computed value as an explicit leading.
     let root = photocraft_text::psd::build_engine_data(&spec(None, Some(true)));
     let styles = style_data(&root);
     assert_eq!(styles.get("AutoLeading").and_then(E::as_bool), Some(true));
-    assert_eq!(styles.get("Leading").and_then(E::as_f32), Some(0.0));
+    assert_eq!(styles.get("Leading").and_then(E::as_f32), Some(36.0));
+    for (size, expected) in [(30.0, 36.0), (26.0, 31.2), (22.0, 26.4)] {
+        let mut sized = spec(None, Some(true));
+        if let Some(run) = sized.runs.first_mut() {
+            run.size = Some(size);
+        }
+        let root = photocraft_text::psd::build_engine_data(&sized);
+        let styles = style_data(&root);
+        let got = styles.get("Leading").and_then(E::as_f32).expect("leading");
+        assert!(
+            (got - expected).abs() < 1e-2,
+            "auto leading at {size} pt: {got} != {expected}"
+        );
+    }
+    // The resource default sheet keeps the neutral absolute value.
+    let resource = root
+        .get("ResourceDict")
+        .and_then(|d| d.get("StyleSheetSet"))
+        .and_then(E::as_array)
+        .and_then(|a| a.first())
+        .and_then(|s| s.get("StyleSheetData"))
+        .expect("resource style data");
+    assert_eq!(resource.get("Leading").and_then(E::as_f32), Some(0.0));
     let para = root
         .get("EngineDict")
         .and_then(|d| d.get("ParagraphRun"))
@@ -883,5 +1042,366 @@ fn auto_leading_round_trips_as_a_ratio() {
     let root = photocraft_text::psd::build_engine_data(&spec(Some(36.0), Some(true)));
     let runs = photocraft_text::runs::from_engine_data(&root);
     assert_eq!(runs[0].auto_leading, Some(true));
-    assert_eq!(runs[0].leading, None, "auto owns the field when both are set");
+    assert_eq!(
+        runs[0].leading, None,
+        "auto owns the field when both are set"
+    );
+}
+
+#[test]
+fn superscript_and_subscript_use_the_txt2_baseline_slot() {
+    // Photoshop stores super/subscript in `Txt2` `/6/13` (`0` normal, `1`
+    // super, `2` sub) and keeps `EngineData` `FontBaseline: 0` for all three
+    // (writer-parity oracle: `baseline_super`/`baseline_sub` re-save the slot
+    // and `FontBaseline 0`; writing only the engine key put PS back to normal).
+    let mut file = fixture("plain_latin.bin");
+    let index = text_layer(&file);
+    let spec = LayerSpec {
+        text: "aXb".into(),
+        runs: vec![
+            RunSpec {
+                len: 1,
+                size: Some(48.0),
+                font: Some("NotoSans-Regular".into()),
+                ..Default::default()
+            },
+            RunSpec {
+                len: 2,
+                size: Some(48.0),
+                font: Some("NotoSans-Regular".into()),
+                baseline: Some(1),
+                ..Default::default()
+            },
+            RunSpec {
+                len: 1,
+                size: Some(48.0),
+                font: Some("NotoSans-Regular".into()),
+                baseline: Some(2),
+                ..Default::default()
+            },
+        ],
+        paragraph: ParagraphSpec::default(),
+        paragraphs: Vec::new(),
+        aa: None,
+        frame: None,
+        shape: None,
+        orientation: None,
+        transform: None,
+        atlas: None,
+        fractional: None,
+        preserve_trailing_break: false,
+    };
+    author_layer(&mut file, index, &spec, &store()).expect("author");
+    let block = file.txt2().expect("Txt2").to_vec();
+    let value = |run: usize| {
+        let mut path = txt2::run_path_for_at(0, run);
+        for step in ["0", "0", "6", "13"] {
+            path.push(txt2::Step::Key(step));
+        }
+        txt2::read_path(&block, &path).unwrap().map(|v| v.to_vec())
+    };
+    assert_eq!(value(0).as_deref(), Some(b"0".as_slice()));
+    assert_eq!(value(1).as_deref(), Some(b"1".as_slice()));
+    assert_eq!(value(2).as_deref(), Some(b"2".as_slice()));
+    let read = photocraft_text::psd::read_layer(&file, index).expect("read");
+    assert_eq!(read.runs[0].baseline, Some(0));
+    assert_eq!(read.runs[1].baseline, Some(1));
+    assert_eq!(read.runs[2].baseline, Some(2));
+    // The engine sheet keeps the neutral value; the slot is authoritative.
+    let ed =
+        photocraft_text::engine_data::parse(&file.text_layer_engine_data(index).unwrap().unwrap())
+            .expect("EngineData");
+    let baseline: Vec<_> = ed
+        .get("EngineDict")
+        .and_then(|d| d.get("StyleRun"))
+        .and_then(|s| s.get("RunArray"))
+        .and_then(|a| a.as_array())
+        .expect("runs")
+        .iter()
+        .map(|r| {
+            r.get("StyleSheet")
+                .and_then(|s| s.get("StyleSheetData"))
+                .and_then(|d| d.get("FontBaseline"))
+                .and_then(|v| v.as_i64())
+        })
+        .collect();
+    // Photoshop mirrors the code into `EngineData` too: its re-save of a
+    // super/sub run keeps `/6/13 = 1/2` and writes `FontBaseline 1/2`.
+    assert_eq!(baseline, vec![Some(0), Some(1), Some(2)]);
+}
+
+#[test]
+fn a_vertical_layer_writes_the_frame_writing_direction() {
+    // Photoshop keeps vertical text in `Txt2`'s frame entry `/0/8/0[i]/0/2/1`
+    // (`2` vertical, key omitted horizontal). A `TySh` `Ornt = Vrtc` alone is
+    // not enough: Photoshop opened such a layer horizontally and re-saved
+    // `Ornt = Hrzn` (writer-parity oracle, `v_plain`/`v_box` before the fix).
+    let mut file = fixture("plain_latin.bin");
+    let index = text_layer(&file);
+    let mut spec = LayerSpec {
+        text: "abc".into(),
+        runs: vec![RunSpec {
+            len: 4,
+            size: Some(48.0),
+            font: Some("NotoSans-Regular".into()),
+            ..Default::default()
+        }],
+        orientation: Some(1),
+        ..Default::default()
+    };
+    author_layer(&mut file, index, &spec, &store()).expect("author");
+    let block = file.txt2().expect("Txt2").to_vec();
+    let marker = |block: &[u8]| {
+        let path = [
+            txt2::Step::Key("0"),
+            txt2::Step::Key("8"),
+            txt2::Step::Key("0"),
+            txt2::Step::Index(0),
+            txt2::Step::Key("0"),
+            txt2::Step::Key("2"),
+            txt2::Step::Key("1"),
+        ];
+        txt2::read_path(block, &path).unwrap().map(|v| v.to_vec())
+    };
+    assert_eq!(
+        marker(&block).as_deref(),
+        Some(b"2".as_slice()),
+        "vertical frame marker"
+    );
+    let tysh = file.text_layer_tysh(index).unwrap().unwrap();
+    assert_eq!(
+        tysh.orientation(),
+        photocraft_psd::text_layer::Orientation::Vertical
+    );
+    let ed =
+        photocraft_text::engine_data::parse(&file.text_layer_engine_data(index).unwrap().unwrap())
+            .expect("EngineData");
+    let shapes = ed
+        .get("EngineDict")
+        .and_then(|d| d.get("Rendered"))
+        .and_then(|r| r.get("Shapes"))
+        .expect("shapes");
+    assert_eq!(
+        shapes.get("WritingDirection").and_then(|v| v.as_i64()),
+        Some(2),
+        "Photoshop composes vertical text from this key"
+    );
+    // Going back to horizontal removes the marker and the engine direction.
+    spec.orientation = Some(0);
+    author_layer(&mut file, index, &spec, &store()).expect("re-author");
+    let block = file.txt2().expect("Txt2").to_vec();
+    assert_eq!(marker(&block), None);
+    let ed =
+        photocraft_text::engine_data::parse(&file.text_layer_engine_data(index).unwrap().unwrap())
+            .expect("EngineData");
+    assert_eq!(
+        ed.get("EngineDict")
+            .and_then(|d| d.get("Rendered"))
+            .and_then(|r| r.get("Shapes"))
+            .and_then(|s| s.get("WritingDirection"))
+            .and_then(|v| v.as_i64()),
+        Some(0)
+    );
+}
+
+#[test]
+fn a_vertical_box_stores_a_vertical_raster() {
+    // `refresh_layer` must dispatch to the vertical renderer for a vertical
+    // layer; the horizontal entry laid the same runs out left-to-right and
+    // stored a wide raster (0..712) for a column that Photoshop renders tall.
+    let mut file = fixture("box_left.bin");
+    let index = text_layer(&file);
+    let spec = LayerSpec {
+        text: "abc".into(),
+        runs: vec![RunSpec {
+            len: 4,
+            size: Some(24.0),
+            font: Some("NotoSans-Regular".into()),
+            ..Default::default()
+        }],
+        orientation: Some(1),
+        frame: Some([0.0, 0.0, 430.0, 200.0]),
+        ..Default::default()
+    };
+    author_layer(&mut file, index, &spec, &store()).expect("author");
+    let layer = file.layers().get(index).expect("layer");
+    let width = layer.rect.right - layer.rect.left;
+    let height = layer.rect.bottom - layer.rect.top;
+    assert!(
+        height > width,
+        "vertical raster is tall (rect {layer:?}), not the horizontal fallback"
+    );
+}
+
+#[test]
+fn an_area_raster_is_anchored_at_the_tysh_translation() {
+    // The `Txt2` frame is stored in text space; the `TySh` transform maps it
+    // to the layer. The stored pixels used to ignore the translation and put
+    // the layer at the text-space origin (0,-2 instead of 20,78 for
+    // `box_left`, whose transform is (20,80)).
+    let mut file = fixture("box_left.bin");
+    let index = text_layer(&file);
+    let spec = LayerSpec {
+        text: "abc def ghi".into(),
+        runs: vec![RunSpec {
+            len: 12,
+            size: Some(24.0),
+            font: Some("NotoSans-Regular".into()),
+            ..Default::default()
+        }],
+        frame: Some([0.0, 0.0, 430.0, 200.0]),
+        ..Default::default()
+    };
+    author_layer(&mut file, index, &spec, &store()).expect("author");
+    let rect = file.layers().get(index).expect("layer").rect;
+    assert!(
+        (20..=22).contains(&rect.left),
+        "the (20,80) TySh translation applies: {rect:?}"
+    );
+    assert!(rect.top > 40, "the translation moves the ink down: {rect:?}");
+}
+
+#[test]
+fn an_area_frame_reaches_the_frame_list_photoshop_composes_from() {
+    // Photoshop composes area text from the `Txt2` frame list, not from the
+    // object's `/99 /F` mirror: two files authored with frame widths 200 and
+    // 400 were both recomposed at the template's 430 until the frame-list
+    // points followed (writer-parity probes `fw_200`/`fw_400`).
+    let mut file = fixture("box_left.bin");
+    let index = text_layer(&file);
+    let mut spec = LayerSpec {
+        text: "abc def ghi".into(),
+        runs: vec![RunSpec {
+            len: 12,
+            size: Some(24.0),
+            font: Some("NotoSans-Regular".into()),
+            ..Default::default()
+        }],
+        frame: Some([0.0, 0.0, 200.0, 300.0]),
+        ..Default::default()
+    };
+    author_layer(&mut file, index, &spec, &store()).expect("author");
+    let block = file.txt2().expect("Txt2").to_vec();
+    let path = txt2::object_frame_path(&block, 0).expect("frame path");
+    assert_eq!(path.kind, 1, "a box frame");
+    assert_eq!(path.range, [-2.0, -2.0]);
+    let max_x = path
+        .points
+        .chunks_exact(2)
+        .map(|p| p[0])
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert_eq!(max_x, 200.0, "the authored width is the composed width");
+    spec.frame = Some([0.0, 0.0, 400.0, 300.0]);
+    author_layer(&mut file, index, &spec, &store()).expect("re-author");
+    let block = file.txt2().expect("Txt2").to_vec();
+    let path = txt2::object_frame_path(&block, 0).expect("frame path");
+    let max_x = path
+        .points
+        .chunks_exact(2)
+        .map(|p| p[0])
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert_eq!(max_x, 400.0, "a width change rewrites the frame list");
+    let geometry = txt2::object_frame_geometry(&block, 0).expect("geometry");
+    assert_eq!((geometry.right, geometry.bottom), (400.0, 300.0));
+}
+
+#[test]
+fn a_vertical_point_raster_spans_the_em_cells() {
+    // Photoshop sizes a vertical point layer's stored rectangle to the column's
+    // em-cell extent (nine 24 pt cells -> 217 px for "abc def ghi"), not to the
+    // ink crop (205). Horizontal and box text stay ink-tight.
+    let mut file = fixture("plain_latin.bin");
+    let index = text_layer(&file);
+    let spec = LayerSpec {
+        text: "abc".into(),
+        runs: vec![RunSpec {
+            len: 4,
+            size: Some(24.0),
+            font: Some("NotoSans-Regular".into()),
+            ..Default::default()
+        }],
+        orientation: Some(1),
+        ..Default::default()
+    };
+    author_layer(&mut file, index, &spec, &store()).expect("author");
+    let rect = file.layers().get(index).expect("layer").rect;
+    assert_eq!(
+        rect.bottom - rect.top,
+        73,
+        "three 24 pt cells + the inclusive edge: {rect:?}"
+    );
+}
+
+#[test]
+fn underline_and_strike_types_reach_the_txt2_style_codes() {
+    let mut file = fixture("plain_latin.bin");
+    let index = text_layer(&file);
+    let spec = LayerSpec {
+        text: "abc".into(),
+        runs: vec![RunSpec {
+            len: 4,
+            size: Some(24.0),
+            font: Some("NotoSans-Regular".into()),
+            underline: true,
+            underline_type: Some(1),
+            strikethrough: true,
+            strike_type: Some(2),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    author_layer(&mut file, index, &spec, &store()).expect("author");
+    let block = file.txt2().expect("Txt2").to_vec();
+    let underline = txt2::run_property_at(&block, 0, 0, txt2::RunProperty::Underline)
+        .and_then(|v| v.as_i64());
+    let strike = txt2::run_property_at(&block, 0, 0, txt2::RunProperty::Strikethrough)
+        .and_then(|v| v.as_i64());
+    assert_eq!(underline, Some(1), "UNDERLINERIGHT code");
+    assert_eq!(strike, Some(2), "STRIKEBOX code");
+    let read = photocraft_text::psd::read_layer(&file, index).expect("read");
+    let run = &read.runs[0];
+    assert_eq!(run.underline_type, Some(1));
+    assert_eq!(run.strike_type, Some(2));
+}
+
+#[test]
+fn a_non_empty_dict_at_a_scalar_only_paragraph_slot_is_clamped() {
+    // Photoshop refuses to open a document whose paragraph sheet holds a
+    // non-empty dictionary at `/27`/`/28` (measured: `app.open` throws in
+    // ~35 ms and never saves, while the file is structurally valid). The
+    // writer must never serialise one.
+    let mut file = fixture("plain_latin.bin");
+    let index = text_layer(&file);
+    let block = file.txt2().expect("Txt2").to_vec();
+    let mut path = txt2::paragraph_props_path_at(0, 0);
+    path.push(txt2::Step::Key("27"));
+    let block = txt2::ensure_container(&block, &path, b"<< /0 1 >>").expect("dict");
+    file.set_txt2(Some(block));
+    let poisoned = file.txt2().expect("Txt2").to_vec();
+    assert_eq!(
+        txt2::dict_slot_violations_at(&poisoned, 0).expect("scan"),
+        vec![(0, "27")],
+        "the fixture must carry the violation for this test to mean anything"
+    );
+
+    let spec = LayerSpec {
+        text: "Hi".into(),
+        runs: vec![RunSpec {
+            len: 3,
+            size: Some(24.0),
+            font: Some("NotoSans-Regular".into()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    author_layer(&mut file, index, &spec, &store()).expect("author");
+    let written = file.txt2().expect("Txt2").to_vec();
+    assert!(
+        txt2::dict_slot_violations_at(&written, 0)
+            .expect("scan")
+            .is_empty(),
+        "the writer emitted a document Photoshop cannot open"
+    );
+    let raw = txt2::read_path(&written, &path).expect("read").expect("slot");
+    assert_eq!(raw, b"/nil", "clamped to the slot's default");
 }

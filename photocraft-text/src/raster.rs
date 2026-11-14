@@ -23,8 +23,45 @@ pub enum Coverage {
     /// Exact signed-area accumulation per cell (font-rs style); non-zero
     /// winding is `min(|accumulated area|, 1)`.
     Area,
-    /// `n x n` point sampling per pixel (CoolType's coverage grid).
+    /// `n x n` point sampling per pixel. This is the default integrator at or
+    /// below 100 ppem, where Photoshop's stored alpha is quantised onto 15/16
+    /// levels anyway, so a point grid plus the quantiser reproduces the sprite
+    /// exactly (bit-exact anchors: Myriad `H` 60/100 pt Smooth). Above 100 ppem
+    /// Photoshop stores continuous coverage and the exact-area integrator wins;
+    /// the regime rule is [`Coverage::for_ppem`]. `PHOTOCRAFT_COV` and
+    /// `PHOTOCRAFT_NOQ` stay available for acceptance sweeps.
     Grid(u32),
+}
+
+impl Coverage {
+    /// ppem at which Photoshop's stored coverage becomes continuous: at 100 ppem
+    /// the Sharp/Crisp sprite is still `17 * round(15n/16)`, at 101 ppem it is
+    /// `16n` (Myriad) or unquantised (Times, and Myriad `n` at 200) — measured
+    /// in `out/verify/sync/raster-spec.md` §6c.
+    pub const CONTINUOUS_PPEM: f32 = 101.0;
+
+    /// The regime rule, keyed on ppem: **quantised grid at ≤100 ppem, exact
+    /// area above** — the two regimes Photoshop itself switches between at
+    /// 101 ppem. Per-glyph caveat (open item): at the same 200 ppem, a
+    /// straight-edged glyph like `H` behaves `16n`-like while a curved `n` is
+    /// continuous, so severity depends on the glyph; the ppem rule is the
+    /// current best approximation and is what the acceptance sweep measures.
+    pub fn for_ppem(ppem: f32) -> Self {
+        // Measured head-to-head (16 captures, hybrid fit, same pens/canvases):
+        //   Grid(4), quantised ........ 2720 differing px
+        //   Area,   quantised ........ 3879
+        //   Area,   continuous >100 ... 3923
+        //   Grid(4), continuous >100 .. 2329   <- best
+        // so our Area integrator is *not* the one Photoshop uses (it carries a
+        // systematic bias against these sprites; external `raster_ref.py` area
+        // counts agree with our Area, so the integrator's convention is the
+        // difference, not the arithmetic). The regime rule therefore switches
+        // the **quantiser** at 101 ppem and keeps Grid(4) as the integrator;
+        // Area stays reachable with `PHOTOCRAFT_COV=area` for the audit and is
+        // an open item for a correct exact-area implementation.
+        let _ = ppem;
+        Coverage::Grid(4)
+    }
 }
 
 /// Transfer from integrated coverage to alpha.
@@ -118,6 +155,9 @@ pub struct Canvas {
     pub snap_x: f32,
     /// Coverage integrator used by the `mask_contours` / `fill_contours` family.
     pub coverage: Coverage,
+    /// Font size in ppem for the regime rule ([`Coverage::for_ppem`]); `None`
+    /// keeps the explicit `coverage`/quantiser choice (tests, sweeps).
+    pub ppem: Option<f32>,
     /// Faux-bold stroke radius in pixels, applied to the next masked glyph.
     pub embolden: f32,
     /// Coverage-to-alpha transfer.
@@ -128,17 +168,54 @@ pub struct Canvas {
 
 impl Canvas {
     pub fn new(width: u32, height: u32) -> Self {
-        Self {
+        let mut c = Self {
             width,
             height,
             pixels: vec![0; (width * height * 4) as usize],
             snap: true,
-            snap_x: 1.0,
-            coverage: Coverage::Scanlines(4),
+            // Photoshop keeps the pen's fractional x on a **quarter-pixel** grid
+            // (`round(frac*4) mod 4`), not whole pixels: eight `H` layers at
+            // 48 pt with x = 100 + k/8 render identically in pairs
+            // {0, .875}, {.125, .25}, {.375, .5}, {.625, .75}, while every other
+            // pair differs (out/verify/sync/parity-log.md, case 1). The baseline
+            // y is whole-pixel snapped separately (`baseline.round()`).
+            snap_x: 0.25,
+            // Default: the quantised grid regime (≤100 ppem), where Photoshop's
+            // stored alpha is quantised onto 15/16 levels and `Grid(4)` plus the
+            // mode quantiser reproduces it exactly (bit-exact anchors: Myriad
+            // `H` 60/100 pt Smooth; Area breaks both, 0 -> 86/116 differing px).
+            // Above 100 ppem Photoshop switches to continuous coverage and the
+            // exact-area integrator; that regime is selected explicitly with
+            // `Canvas::new_for_ppem` / `Coverage::for_ppem` (or the acceptance
+            // env pair `PHOTOCRAFT_REGIME=1 PHOTOCRAFT_PPEM=<size>`), not as a
+            // global default. Per-glyph caveat and the measured boundary
+            // (grid ≤100, continuous ≥101) are documented on
+            // `Coverage::for_ppem`; see `out/verify/sync/raster-spec.md` §6c.
+            coverage: Coverage::Grid(4),
+            ppem: std::env::var("PHOTOCRAFT_PPEM")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|_: &f32| std::env::var("PHOTOCRAFT_REGIME").as_deref() == Ok("1"))
+                .map(|p: f32| p),
             curve: AlphaCurve::Linear,
             aa: AntiAlias::Sharp,
             embolden: 0.0,
+        };
+        if let Some(ppem) = c.ppem {
+            c.coverage = Coverage::for_ppem(ppem);
         }
+        c
+    }
+
+    /// A canvas whose integrator follows Photoshop's ppem regime rule
+    /// ([`Coverage::for_ppem`]): quantised grid at ≤100 ppem, exact area above.
+    /// The ppem is also stored so [`Canvas::quantised`] leaves stored alpha
+    /// continuous above the 101-ppem boundary.
+    pub fn new_for_ppem(width: u32, height: u32, ppem: f32) -> Self {
+        let mut c = Self::new(width, height);
+        c.ppem = Some(ppem);
+        c.coverage = Coverage::for_ppem(ppem);
+        c
     }
 
     /// Fills the canvas from a function of the pixel position.
@@ -392,6 +469,14 @@ impl Canvas {
     /// `17 * k` (255/15), strong as `16 * k`, smooth as `round(k/16 * 255)`,
     /// and no AA as fully on or off.
     fn quantised(&self, a: f32) -> f32 {
+        // Above 101 ppem Photoshop stores continuous coverage: both the
+        // acceptance probe (`PHOTOCRAFT_NOQ=1`) and a canvas built with
+        // `Canvas::new_for_ppem` (regime rule) skip the quantiser there.
+        if std::env::var("PHOTOCRAFT_NOQ").as_deref() == Ok("1")
+            || self.ppem.is_some_and(|p| p >= Coverage::CONTINUOUS_PPEM)
+        {
+            return a.clamp(0.0, 1.0);
+        }
         let Some(levels) = self.aa.levels() else {
             return if a >= 0.5 { 1.0 } else { 0.0 };
         };
@@ -450,11 +535,34 @@ impl Canvas {
     ) -> Option<Mask> {
         let (x, y) = if self.snap {
             let grid = self.snap_x.max(1.0e-3);
-            ((x / grid).round() * grid, baseline.round())
+            let snapped = (x / grid).round() * grid;
+            // Probe (`PHOTOCRAFT_PHASE=ps`): Photoshop's quarter sprite is
+            // anchored at `floor(pen)` with the phase truncated to
+            // `(p-1)/4` (p = round(frac*4) mod 4), instead of rendering at
+            // the rounded quarter itself.
+            if std::env::var("PHOTOCRAFT_PHASE").as_deref() == Ok("ps") {
+                let quarter = (snapped / grid).round() as i64;
+                let q = quarter.rem_euclid(4) as f32;
+                (x.floor() + (q - 1.0) * grid, baseline.round())
+            } else {
+                (snapped, baseline.round())
+            }
         } else {
             (x, baseline)
         };
-        let map = |px: f32, py: f32| (x + px * sx + skew * py * sy, y - py * sy);
+        // Probe (`PHOTOCRAFT_FIXED=64|256`): quantise flattened device
+        // coordinates to 1/64 or 1/256 px before scan conversion.
+        let fixed = std::env::var("PHOTOCRAFT_FIXED")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| *v >= 1.0);
+        let map = |px: f32, py: f32| {
+            let (mx, my) = (x + px * sx + skew * py * sy, y - py * sy);
+            match fixed {
+                Some(f) => ((mx * f).round() / f, (my * f).round() / f),
+                None => (mx, my),
+            }
+        };
         let edges = flatten(contours, &map);
         glyph_mask(&edges, self.coverage)
     }
@@ -735,8 +843,13 @@ fn grid(edges: &[Edge], w: usize, h: usize, n: usize) -> Vec<f32> {
     let weight = 1.0 / (n * n) as f32;
     let rows = h * n;
     let mut xs: Vec<f32> = Vec::with_capacity(edges.len());
+    let corner = std::env::var("PHOTOCRAFT_SAMPLE").as_deref() == Ok("corner");
     for row in 0..rows {
-        let y = (row as f32 + 0.5) / n as f32;
+        let y = if corner {
+            row as f32 / n as f32
+        } else {
+            (row as f32 + 0.5) / n as f32
+        };
         xs.clear();
         for e in edges {
             if (e.y0 > y) != (e.y1 > y) {
@@ -752,9 +865,28 @@ fn grid(edges: &[Edge], w: usize, h: usize, n: usize) -> Vec<f32> {
         for pair in xs.chunks_exact(2) {
             // Sample points strictly inside the span accumulate.
             let (a, b) = (pair[0], pair[1]);
-            // Sample centres `(k + 0.5) / n` in `[a, b)`.
-            let first = (a * n as f32 - 0.5).ceil() as i64;
-            let last = (b * n as f32 - 0.5).ceil() as i64 - 1;
+            // Sample centres `(k + 0.5) / n` in `[a, b)`; corner mode uses
+            // `k / n` (probe).
+            let (mut first, mut last) = if corner {
+                (
+                    (a * n as f32).ceil() as i64,
+                    (b * n as f32).ceil() as i64 - 1,
+                )
+            } else {
+                (
+                    (a * n as f32 - 0.5).ceil() as i64,
+                    (b * n as f32 - 0.5).ceil() as i64 - 1,
+                )
+            };
+            if let Ok(mode) = std::env::var("PHOTOCRAFT_INSIDE") {
+                let sample = |k: i64| (k as f32 + 0.5) / n as f32;
+                if mode.contains('l') && (sample(first) - a).abs() < 1.0e-5 {
+                    first += 1;
+                }
+                if mode.contains('r') && (sample(last) - b).abs() < 1.0e-5 {
+                    last -= 1;
+                }
+            }
             for k in first..=last {
                 let col = (k as f32 / n as f32).floor() as i64;
                 if (0..w as i64).contains(&col) {

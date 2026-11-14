@@ -52,9 +52,9 @@ impl Justification {
         match value {
             1 => Self::Right,
             2 => Self::Center,
-            3 => Self::JustifyLastCenter,
+            3 => Self::JustifyLastLeft,
             4 => Self::JustifyLastRight,
-            5 => Self::JustifyAll,
+            5 => Self::JustifyLastCenter,
             6 => Self::JustifyAll,
             _ => Self::Left,
         }
@@ -476,7 +476,10 @@ pub fn layout_area_runs_paragraphs_with_advances(
         height,
         origin,
         ascender_ratio,
-        CacheDeltas { glyphs: advances, spaces: &[] },
+        CacheDeltas {
+            glyphs: advances,
+            spaces: &[],
+        },
         false,
     )
 }
@@ -537,7 +540,10 @@ pub fn layout_area_runs_paragraphs_point(
         height,
         origin,
         ascender_ratio,
-        CacheDeltas { glyphs: advances, spaces: &[] },
+        CacheDeltas {
+            glyphs: advances,
+            spaces: &[],
+        },
         true,
     )
 }
@@ -1305,7 +1311,10 @@ mod cache_advance_tests {
     /// word-spacing corrections (the cache carries the real ones).
     #[test]
     fn cache_corrections_disable_the_uniform_every_line_nudge() {
-        let deltas = CacheDeltas { glyphs: &[], spaces: &[-0.0468] };
+        let deltas = CacheDeltas {
+            glyphs: &[],
+            spaces: &[-0.0468],
+        };
         assert!(!deltas.is_empty());
         let empty = CacheDeltas::default();
         assert!(empty.is_empty());

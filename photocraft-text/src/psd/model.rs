@@ -48,8 +48,17 @@ pub struct RunSpec {
     pub italic: bool,
     #[serde(default)]
     pub underline: bool,
+    /// The `Txt2` underline style code (`/6/16`): `0` none, `1` right,
+    /// `2` left (measured from PS-authored files; `YUnderline` is 0 only for
+    /// the left style). `None` derives the code from [`Self::underline`].
+    #[serde(default)]
+    pub underline_type: Option<i64>,
     #[serde(default)]
     pub strikethrough: bool,
+    /// The `Txt2` strike style code (`/6/15`): `0` none, `2` box (measured).
+    /// `None` derives the code from [`Self::strikethrough`].
+    #[serde(default)]
+    pub strike_type: Option<i64>,
     #[serde(default)]
     pub all_caps: bool,
     #[serde(default)]
@@ -88,8 +97,9 @@ pub struct RunSpec {
 /// Paragraph formatting for the whole layer.
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct ParagraphSpec {
-    /// Photoshop's code: 0 left, 1 right, 2 centre, 3 justify-last-centre,
-    /// 4 justify-last-right, 5 justify all, 6 justify-last-left.
+    /// Photoshop's code (measured with the 7-alignment oracle): 0 left,
+    /// 1 right, 2 centre, 3 justify-last-left, 4 justify-last-right,
+    /// 5 justify-last-centre, 6 justify-all.
     #[serde(default)]
     pub justification: i64,
     #[serde(default)]
@@ -128,7 +138,7 @@ pub struct ParagraphSpec {
     #[serde(default = "default_hyphenate_before")]
     pub hyphenate_before_last: i64,
     /// `ConsecutiveHyphens`: maximum consecutive hyphenated lines.
-    #[serde(default)]
+    #[serde(default = "default_hyphenate_limit")]
     pub hyphenate_limit: i64,
     /// `Zone`: hyphenation zone in points.
     #[serde(default = "default_hyphenate_zone")]
@@ -177,6 +187,10 @@ fn default_hyphenate_zone() -> f32 {
     36.0
 }
 
+fn default_hyphenate_limit() -> i64 {
+    8
+}
+
 fn default_hyphenate_capital() -> bool {
     true
 }
@@ -200,7 +214,7 @@ impl Default for ParagraphSpec {
             hyphenate_words_longer_than: default_hyphenate_words(),
             hyphenate_after_first: default_hyphenate_after(),
             hyphenate_before_last: default_hyphenate_before(),
-            hyphenate_limit: 0,
+            hyphenate_limit: default_hyphenate_limit(),
             hyphenate_zone: default_hyphenate_zone(),
             hyphenate_capital_words: default_hyphenate_capital(),
             burasagari: false,

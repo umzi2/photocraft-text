@@ -45,7 +45,13 @@ pub struct RunStyle {
     pub faux_bold: bool,
     pub faux_italic: bool,
     pub underline: bool,
+    /// `Txt2 /6/16`: underline style (0 none, 1 right, 2 left). `None` when
+    /// only the boolean is known; `EngineData`'s `YUnderline` is 0 only for
+    /// the left style.
+    pub underline_type: Option<i64>,
     pub strikethrough: bool,
+    /// `Txt2 /6/15`: strike style (0 none, 2 box).
+    pub strike_type: Option<i64>,
     pub all_caps: bool,
     pub small_caps: bool,
     /// Old-style figures. `EngineData` has no key for this feature (Photoshop

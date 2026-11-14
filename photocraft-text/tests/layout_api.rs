@@ -750,18 +750,21 @@ fn vertical_soft_wraps_when_the_column_height_runs_out() {
         (size * 3.0, size * 3.0),
     )
     .expect("vertical box layout");
-    // Three em of height hold three glyphs per column, so the eight glyphs
-    // wrap into three columns (3 + 3 + 2). Every one of them is composed: a
-    // vertical box has no width clip (a Photoshop box-width sweep down to 4 pt
-    // keeps all five columns, `out/verify/txt2work/sweep_result.json`), and the
+    // Three em of height hold two glyphs per column (the column step is the
+    // 1.2-em leading), so the eight glyphs would wrap into four columns
+    // (2 + 2 + 2 + 2); the fourth column's em cell lies entirely left of the
+    // three-em-wide frame, so Photoshop's stop rule keeps three (2 + 2 + 2)
+    // and drops the last two glyphs. Every kept column is composed: a vertical
+    // box has no width clip (a Photoshop box-width sweep down to 4 pt keeps
+    // all five columns, `out/verify/txt2work/sweep_result.json`), and the
     // column anchored at the box's right edge deliberately overhangs it.
     assert_eq!(short.lines.len(), 3, "three wrapped columns");
-    assert_eq!(&text[short.lines[2].range.clone()], "GH");
+    assert_eq!(&text[short.lines[2].range.clone()], "EF");
     assert!(
         short.lines[1].x0 < short.lines[0].x0,
         "wrapped columns do not advance left"
     );
-    assert_eq!(&text[short.lines[0].range.clone()], "ABC");
+    assert_eq!(&text[short.lines[0].range.clone()], "AB");
 }
 
 /// A vertical paragraph box anchors its first column at the box's **right**
@@ -789,8 +792,8 @@ fn a_vertical_box_anchors_its_columns_at_the_right_edge() {
     .expect("vertical box layout");
     assert_eq!(
         layout.lines.len(),
-        2,
-        "four em of height hold four glyphs per column"
+        3,
+        "four em of height hold three glyphs per column (the column step is the 1.2-em leading)"
     );
     // (the 1.2-em step still fits both columns inside an eight-em box)
     // A column is one em wide but the column *step* is the leading (Photoshop
@@ -974,23 +977,26 @@ fn vertical_box_centres_each_column_along_the_frame_for_center_justification() {
         (200.0, 200.0),
     )
     .expect("vertical box layout");
-    assert_eq!(layout.lines.len(), 2, "two paragraphs, two columns");
+    // The model's run sheet carries an explicit `Leading 38` (AutoLeading
+    // false), so the 200 pt frame holds floor(200 / 38) = 5 glyphs per column:
+    // "AVATAR" wraps into "AVATA" + "R" and "Ty" keeps its own column.
+    assert_eq!(layout.lines.len(), 3, "two paragraphs, three columns");
     // NotoSans-Regular cap 714/1000 at 24 pt -> first_off = (24 + 17.136)/2.
     let first_off = (24.0 + 0.714 * 24.0) * 0.5;
     let first_column = layout.caret(0).y0;
-    let second_column = layout.caret(7).y0; // after "AVATAR\r"
+    let second_column = layout.caret(7).y0; // 'T' of "Ty", after "AVATAR\r"
     assert!(
-        (first_column - (first_off + 28.0)).abs() < 0.02,
-        "column 0 along start {first_column}, want {} (frame 200, extent 144)",
-        first_off + 28.0
+        (first_column - (first_off + 40.0)).abs() < 0.02,
+        "column 0 along start {first_column}, want {} (frame 200, extent 120)",
+        first_off + 40.0
     );
     assert!(
         (second_column - (first_off + 76.0)).abs() < 0.02,
-        "column 1 along start {second_column}, want {} (frame 200, extent 48)",
+        "column 2 along start {second_column}, want {} (frame 200, extent 48)",
         first_off + 76.0
     );
-    // The two columns differ by exactly the difference of their centring offsets.
-    assert!((second_column - first_column - 48.0).abs() < 0.02);
+    // The centring offsets differ by the column extents' difference / 2.
+    assert!((second_column - first_column - 36.0).abs() < 0.02);
 }
 
 /// Photoshop stops *composing* a boxed vertical line at the first column whose
@@ -1012,7 +1018,7 @@ fn a_vertical_box_stops_composing_at_the_first_column_outside_the_frame() {
     let store = store();
     let text = "ABCD\rEFGH\rIJKL"; // three paragraphs, one column each
     let size = case.spec.runs.first().and_then(|r| r.size).unwrap_or(18.0);
-    let height = size * 4.0; // four glyphs per column: no soft wrap
+    let height = size * 5.0; // >= 4 x the 1.2-em pitch: four glyphs, no soft wrap
     let face = store.face("NotoSans-Regular").expect("checked-in font");
     let b0 = size * layer_render::vertical_b0_ratio(&face); // Noto 48 pt: 0.4029998 * 48
     let first_centre = |width: f32| width - b0;

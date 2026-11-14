@@ -394,11 +394,15 @@ impl<'a> Face<'a> {
         self.metrics(gid).advance
     }
 
-    /// Kerning adjustment in font units for a glyph pair, consulting the
-    /// `kern` table first and then GPOS `kern` pair lookups.
+    /// Kerning adjustment in font units for a glyph pair.
+    ///
+    /// A face that ships a usable legacy `kern` subtable is kerned from it — that is the table
+    /// Photoshop applies for Times New Roman, Arial, Trebuchet MS and Verdana, whose values have no
+    /// GPOS equivalent at all. GPOS pair kerning is the fallback for faces without a `kern` table
+    /// (Myriad Pro, Minion Pro, the Noto faces) and stays the only path for them.
     pub fn kern_pair(&self, left: u16, right: u16) -> i32 {
-        if let Some(v) = self.kern.pair(left, right) {
-            return v;
+        if self.kern.has_subtables() {
+            return self.kern.pair(left, right).unwrap_or(0);
         }
         if let Some(g) = &self.gpos {
             if let Some(v) = g.pair(left, right) {

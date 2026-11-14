@@ -74,10 +74,10 @@ fn justification_code(j: Justification) -> i64 {
         Justification::Left => 0,
         Justification::Right => 1,
         Justification::Center => 2,
-        Justification::JustifyLastCenter => 3,
+        Justification::JustifyLastLeft => 3,
         Justification::JustifyLastRight => 4,
-        Justification::JustifyAll => 5,
-        Justification::JustifyLastLeft => 6,
+        Justification::JustifyLastCenter => 5,
+        Justification::JustifyAll => 6,
     }
 }
 

@@ -62,7 +62,34 @@ pub(super) fn refresh_layer(
         Some(f) => ((f.right - f.left).max(1.0), (f.bottom - f.top).max(1.0)),
         None => (0.0, 0.0),
     };
-    let pixels = layer_render::render_from_engine_data(store, &ed, text, box_size, (0.0, 0.0))?;
+    // A vertical layer (`Rendered/Shapes/WritingDirection = 2`, the marker
+    // Photoshop itself writes) must go through the vertical renderer: the
+    // horizontal entry lays the same runs out left-to-right, which gave every
+    // authored vertical layer a horizontal raster and ink bounds (0..712 wide
+    // against Photoshop's 24x420 tall). Both entries share the same
+    // `LayerPixels::offset` contract (top-left of the ink relative to the text
+    // origin), so the placement below stays the same.
+    let vertical = ed
+        .get("EngineDict")
+        .and_then(|e| e.get("Rendered"))
+        .and_then(|r| r.get("Shapes"))
+        .and_then(|s| s.get("WritingDirection"))
+        .and_then(|v| v.as_i64())
+        == Some(2);
+    let pixels = if vertical {
+        match frame {
+            Some(_) => layer_render::render_vertical_from_engine_data_in_box(
+                store,
+                &ed,
+                text,
+                (0.0, 0.0),
+                box_size,
+            )?,
+            None => layer_render::render_vertical_from_engine_data(store, &ed, text, (0.0, 0.0))?,
+        }
+    } else {
+        layer_render::render_from_engine_data(store, &ed, text, box_size, (0.0, 0.0))?
+    };
     // `pixels.offset` is measured from the first baseline: x from the text
     // origin, y from that baseline (negative = ink rises above it). Point text
     // is anchored at the `TySh` transform translation (the text origin, whose
@@ -71,36 +98,70 @@ pub(super) fn refresh_layer(
     if pixels.width == 0 || pixels.height == 0 {
         return Ok(());
     }
-    let first_off = layer_render::first_baseline_offset_of(store, &ed).unwrap_or(0.0);
-    let (anchor_x, anchor_y) = match frame {
-        Some(f) => (f.left, f.top + first_off),
-        None => {
-            let transform = &block[2..50];
-            let tx = f64::from_be_bytes(
-                transform[32..40]
-                    .try_into()
-                    .expect("validated TySh transform"),
-            );
-            let ty = f64::from_be_bytes(
-                transform[40..48]
-                    .try_into()
-                    .expect("validated TySh transform"),
-            );
-            (tx as f32, ty as f32)
+    let transform = &block[2..50];
+    let tx = f64::from_be_bytes(
+        transform[32..40]
+            .try_into()
+            .expect("validated TySh transform"),
+    ) as f32;
+    let ty = f64::from_be_bytes(
+        transform[40..48]
+            .try_into()
+            .expect("validated TySh transform"),
+    ) as f32;
+    // Vertical text is anchored at its text origin (point) or frame top-left
+    // (box) without the horizontal first-baseline offset: the vertical
+    // renderer places the first em cell itself, and adding the baseline put
+    // every vertical box a baseline too low (measured on the fork's
+    // `render_re`, same contract).
+    // Area text's frame is stored in text space, so the `TySh` translation
+    // (`tx`, `ty`) maps it to the layer: without it every authored area layer
+    // landed at the frame's text-space origin (measured: `p_plain` stored
+    // (0,-2,418,162) while Photoshop's recompose is (20,80,438,243) = the same
+    // rect plus the (20,80) transform). Point text is anchored at its text
+    // origin, which already is the transform translation.
+    let (anchor_x, anchor_y) = if vertical {
+        match frame {
+            Some(f) => (tx + f.left, ty + f.top),
+            None => (tx, ty),
+        }
+    } else {
+        let first_off = layer_render::first_baseline_offset_of(store, &ed).unwrap_or(0.0);
+        match frame {
+            Some(f) => (tx + f.left, ty + f.top + first_off),
+            None => (tx, ty),
         }
     };
     let left = anchor_x + pixels.offset.0;
     let top = anchor_y + pixels.offset.1;
+    // Photoshop sizes a **vertical point** layer's stored rectangle to the
+    // column's em-cell extent (measured: "abc def ghi" at 24 pt -> nine cells
+    // = 216, stored height 217), while `LayerPixels` is ink-tight (205). The
+    // rectangle keeps the ink top and extends to the last cell, with the extra
+    // rows transparent; horizontal and box text keep the ink-tight crop.
+    let width = pixels.width;
+    let mut height = pixels.height;
+    let mut rgba = pixels.rgba.clone();
+    if vertical && frame.is_none() {
+        let layout =
+            layer_render::layout_vertical_from_engine_data(store, &ed, text, (0.0, 0.0))?;
+        let cells = layout.box_size.1.round();
+        let wanted = (cells as i64 + 1).max(0) as u32;
+        if wanted > height {
+            rgba.resize(width as usize * wanted as usize * 4, 0);
+            height = wanted;
+        }
+    }
     layer.rect = photocraft_psd::Rect {
         left: left.round() as i32,
         top: top.round() as i32,
-        right: left.round() as i32 + pixels.width as i32,
-        bottom: top.round() as i32 + pixels.height as i32,
+        right: left.round() as i32 + width as i32,
+        bottom: top.round() as i32 + height as i32,
     };
     layer.set_rgba(
-        &pixels.rgba,
-        pixels.width as usize,
-        pixels.height as usize,
+        &rgba,
+        width as usize,
+        height as usize,
         depth,
         version,
     )?;

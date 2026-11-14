@@ -245,8 +245,12 @@ fn paragraph_properties_round_trip() {
             txt2::paragraph_property(&out, i, ParagraphProperty::HyphenateCapitalWords),
             Some(Value::Bool(true))
         );
-        // And the raw keys are the measured ones.
-        assert_eq!(raw_at(&out, &paragraph_sheet_path(i, "0")), "6");
+        // And the raw keys are the measured ones. Justification `3` is
+        // "justify all but the last line, flush left"; the 7-alignment oracle
+        // (`out/verify/sync/justify_probe.py`) measured `0/1/2/3/4/5/6` as
+        // left/right/centre/justify-last-left/justify-last-right/
+        // justify-last-centre/justify-all in both `Txt2` and `EngineData`.
+        assert_eq!(raw_at(&out, &paragraph_sheet_path(i, "0")), "3");
         assert_eq!(raw_at(&out, &paragraph_sheet_path(i, "1")), "24.0");
         assert_eq!(raw_at(&out, &paragraph_sheet_path(i, "2")), "18.0");
         assert_eq!(raw_at(&out, &paragraph_sheet_path(i, "3")), "6.5");

@@ -96,6 +96,18 @@ pub fn author_layer(
     if !agreed {
         block = write_object(block, object, &text, spec)?;
     }
+    // The writing direction lives in the frame entry, not in the object's runs,
+    // so it must follow `spec.orientation` even when the object itself is
+    // unchanged (a re-author that only flips the orientation).
+    if let Some(orientation) = spec.orientation {
+        block = txt2::set_frame_vertical(&block, object, orientation == 1)?;
+    }
+    // Photoshop refuses to open a document whose paragraph sheet holds a
+    // non-empty dictionary at `/27`/`/28` (measured: `app.open` throws and
+    // never saves, while the file is otherwise valid). Clamp it to the slot's
+    // `/nil` default before the block is stored.
+    block = txt2::sanitise_dict_slots_at(&block, object)?;
+    let changed = !agreed || previous.as_deref() != Some(block.as_slice());
 
     // 2. `TySh`: the text, the EngineData mirror, and the optional descriptor
     // fields the spec sets.
@@ -103,7 +115,7 @@ pub fn author_layer(
     // The descriptor's `Txt ` is the text every `TySh`-only reader (and
     // Photoshop's own Text field) shows; without this the three copies disagree.
     tysh.set_text(&text);
-    let styles = run_styles(&spec.runs);
+    let styles = run_styles(spec);
     let paragraphs = paragraph_runs_for(&text, spec);
     let tysh_block = tysh_block(&tysh, &text, spec, styles, paragraphs)?;
     tysh = TySh::from_bytes(&tysh_block)?;
@@ -144,11 +156,53 @@ pub fn author_layer(
         file.header.version,
     )?;
 
-    if !agreed {
+    if changed {
         file.set_txt2(Some(block));
     }
     file.layers_mut()[layer_index] = layer;
     Ok(())
+}
+
+/// The `Txt2` strike style code (`/6/15`): explicit `strike_type`, else the
+/// boolean's box code.
+fn strike_code(spec: &RunSpec) -> i64 {
+    spec.strike_type
+        .unwrap_or(if spec.strikethrough { 2 } else { 0 })
+}
+
+/// The `Txt2` underline style code (`/6/16`): explicit `underline_type`, else
+/// the boolean's left code.
+fn underline_code(spec: &RunSpec) -> i64 {
+    spec.underline_type
+        .unwrap_or(if spec.underline { 2 } else { 0 })
+}
+
+/// A rectangular area frame as Photoshop's frame list stores it: four cubic
+/// segments (anchor, out handle, in handle, next anchor), handles on the
+/// corners, frame kind `1` (box) and the `[-2, -2]` default segment range.
+fn rect_frame_path(left: f32, top: f32, right: f32, bottom: f32) -> txt2::FramePath {
+    let corners = [
+        ((left, top), (right, top)),
+        ((right, top), (right, bottom)),
+        ((right, bottom), (left, bottom)),
+        ((left, bottom), (left, top)),
+    ];
+    let mut points = Vec::with_capacity(32);
+    for (anchor, next) in corners {
+        points.extend_from_slice(&[
+            anchor.0, anchor.1, anchor.0, anchor.1, next.0, next.1, next.0, next.1,
+        ]);
+    }
+    txt2::FramePath {
+        points: points.into_iter().map(f64::from).collect(),
+        kind: 1,
+        range: [-2.0, -2.0],
+        // Photoshop's box frames carry no `/2 /11 /0`; keep the donor's flip
+        // flag instead of adding one.
+        flip: None,
+        matrix: None,
+        vertical: None,
+    }
 }
 
 /// The text object a layer's `TySh` names (`TextIndex`), 0 when absent.
@@ -203,7 +257,7 @@ pub(super) fn spec_text(spec: &LayerSpec) -> String {
         let normalized = spec.text.replace("\r\n", "\r").replace('\n', "\r");
         let trimmed = normalized.trim_end_matches('\r');
         let mut out = trimmed.to_string();
-        out.extend(std::iter::repeat('\r').take(normalized.len() - trimmed.len()));
+        out.extend(std::iter::repeat_n('\r', normalized.len() - trimmed.len()));
         out
     } else {
         normalize(&spec.text)
@@ -288,70 +342,99 @@ pub(super) fn paragraph_run(paragraph: &str, para: &ParagraphSpec) -> ParagraphR
         auto_leading: para.auto_leading,
         hanging: para.hanging_punctuation,
         hyphenate: para.hyphenate,
-        // The detail slots only mean anything while hyphenation is on, and
-        // Photoshop leaves them at zero in a plain `EngineData` sheet; a
-        // spec that does not turn hyphenation on must not change them.
-        words_longer_than: if para.hyphenate {
-            para.hyphenate_words_longer_than
-        } else {
-            0
-        },
-        pre_hyphen: if para.hyphenate {
-            para.hyphenate_after_first
-        } else {
-            0
-        },
-        post_hyphen: if para.hyphenate {
-            para.hyphenate_before_last
-        } else {
-            0
-        },
-        consecutive_hyphens: if para.hyphenate {
-            para.hyphenate_limit
-        } else {
-            0
-        },
-        hyphen_zone: if para.hyphenate {
-            para.hyphenate_zone
-        } else {
-            0.0
-        },
+        // Photoshop always writes the engine defaults for these slots
+        // (`HyphenatedWordSize 6 / PreHyphen 2 / PostHyphen 2 /
+        // ConsecutiveHyphens 8 / Zone 36`) whether or not hyphenation is on;
+        // zeroing them on an unhyphenated paragraph makes the sheet differ
+        // from Photoshop's.
+        words_longer_than: para.hyphenate_words_longer_than,
+        pre_hyphen: para.hyphenate_after_first,
+        post_hyphen: para.hyphenate_before_last,
+        consecutive_hyphens: para.hyphenate_limit,
+        hyphen_zone: para.hyphenate_zone,
     }
+}
+
+/// The line height Photoshop writes beside `AutoLeading: true` for run `index`:
+/// `size x` the auto-leading fraction of the paragraph the run starts in
+/// (`/5/7`, `1.2` unless the paragraph overrides it). The writer-parity oracle
+/// measured `22 pt x 1.5 = 33.0` for an `auto_leading: 1.5` paragraph and
+/// `48 pt x 1.2 = 57.6` for the default.
+fn auto_leading_pt(spec: &LayerSpec, index: usize) -> Option<f32> {
+    let run = spec.runs.get(index)?;
+    if run.leading.is_some() || run.auto_leading == Some(false) {
+        return None;
+    }
+    let size = run.size?;
+    // The paragraph a run starts in: cumulative UTF-16 run lengths against the
+    // paragraph lengths (`paragraph_run` counts each paragraph's own break).
+    let mut start = 0i64;
+    for previous in &spec.runs[..index] {
+        start += previous.len as i64;
+    }
+    let mut paragraph = 0usize;
+    let mut end = 0i64;
+    for (i, piece) in spec.text.split('\r').enumerate() {
+        end += piece.encode_utf16().count() as i64 + 1;
+        if start < end {
+            paragraph = i;
+            break;
+        }
+    }
+    let ratio = paragraph_spec(spec, paragraph).auto_leading;
+    Some((size * ratio * 1000.0).round() / 1000.0)
 }
 
 /// Style runs of the layer for the `EngineData` mirror. `stroke` has no
 /// `EngineData` slot in this crate's `RunStyle`, so it reaches `Txt2` (and the
 /// stored pixels) only.
-pub(super) fn run_styles(spec: &[RunSpec]) -> Vec<RunStyle> {
-    spec.iter()
-        .map(|r| RunStyle {
-            len: r.len,
-            font: r.font.clone(),
-            size: r.size,
-            leading: r.leading,
-            auto_leading: r.auto_leading,
-            tracking: r.tracking,
-            baseline_shift: r.baseline_shift,
-            horizontal_scale: r.horizontal_scale,
-            vertical_scale: r.vertical_scale,
-            color: r.color,
-            auto_kerning: r.auto_kerning,
-            kerning: r.kerning,
-            faux_bold: r.bold,
-            faux_italic: r.italic,
-            underline: r.underline,
-            strikethrough: r.strikethrough,
-            all_caps: r.all_caps,
-            small_caps: r.small_caps,
-            old_style: r.old_style,
-            ligatures: r.ligatures,
-            alternate_ligatures: r.alternate_ligatures,
-            no_break: r.no_break,
-            language: r.language,
-            baseline: r.baseline,
-            rotate_roman: r.rotate_roman,
-            features: r.features.clone(),
-            ..RunStyle::default()
+pub(super) fn run_styles(spec: &LayerSpec) -> Vec<RunStyle> {
+    spec.runs
+        .iter()
+        .enumerate()
+        .map(|(index, r)| {
+            // The mirror Photoshop keeps beside an auto-leading run: its line
+            // height is `size x` the paragraph ratio, and the auto flag must
+            // stay on (`leading: Some` alone would read back as explicit).
+            let auto_pt = auto_leading_pt(spec, index);
+            // An auto-leading run's sheet `Leading` follows the covering
+            // paragraph's ratio (measured: 22 pt at 1.5 -> 33, 48 pt at 1.5 ->
+            // 72), so a stored mirror value must not override the ratio the
+            // spec resolves; only an explicit leading wins.
+            let auto = r.auto_leading == Some(true)
+                || (r.auto_leading.is_none() && r.leading.is_none());
+            let leading = if auto { auto_pt.or(r.leading) } else { r.leading };
+            RunStyle {
+                leading,
+                auto_leading: r.auto_leading.or(if auto { Some(true) } else { None }),
+                len: r.len,
+                font: r.font.clone(),
+                size: r.size,
+                tracking: r.tracking,
+                baseline_shift: r.baseline_shift,
+                horizontal_scale: r.horizontal_scale,
+                vertical_scale: r.vertical_scale,
+                color: r.color,
+                auto_kerning: r.auto_kerning,
+                kerning: r.kerning,
+                faux_bold: r.bold,
+                faux_italic: r.italic,
+                underline: r.underline,
+                underline_type: r.underline_type,
+                strikethrough: r.strikethrough,
+                strike_type: r.strike_type,
+                all_caps: r.all_caps,
+                small_caps: r.small_caps,
+                old_style: r.old_style,
+                ligatures: r.ligatures,
+                alternate_ligatures: r.alternate_ligatures,
+                no_break: r.no_break,
+                language: r.language,
+                baseline: r.baseline,
+                rotate_roman: r.rotate_roman,
+                features: r.features.clone(),
+                ..RunStyle::default()
+            }
         })
         .collect()
 }
@@ -391,7 +474,7 @@ pub(super) fn write_object(
     // Per-run character properties, the `/5 1` marker and the font indices.
     for (i, run) in spec.runs.iter().enumerate() {
         block = txt2::set_character_run_marker(&block, object, i)?;
-        block = write_run(&block, object, i, run)?;
+        block = write_run(&block, object, i, run, auto_leading_pt(spec, i))?;
     }
 
     // Paragraph properties, per paragraph run. A hand-built/minimal block may
@@ -464,8 +547,7 @@ pub(super) fn write_object(
     }
     // The composed rectangle lives in the object's `/99 /F` frame dictionary. A
     // fresh object the writer created has none (its frame is the frame-list
-    // entry); there is nothing to patch then, and Photoshop composes it from
-    // the `TySh` `BoxBounds` the block builder writes.
+    // entry); there is nothing to patch then.
     if let Some([left, top, right, bottom]) = spec.frame
         && txt2::object_frame_geometry(&block, object).is_some()
     {
@@ -479,6 +561,19 @@ pub(super) fn write_object(
                 bottom,
             },
         )?;
+        // Photoshop composes area text from the **frame list** (`/0/8/0[i]`),
+        // not from the object's `/99 /F` mirror: two files authored with frame
+        // widths 200 and 400 were both recomposed at the template's 430 until
+        // the frame-list points followed (`out/verify/sync/probes/fw_200/400`).
+        // A rectangle is four cubic segments whose handles sit on the corners
+        // (Photoshop's own box path).
+        if spec.shape.is_none() && txt2::object_frame_index(&block, object).is_some() {
+            block = txt2::set_object_frame_path(
+                &block,
+                object,
+                &rect_frame_path(left, top, right, bottom),
+            )?;
+        }
     }
     // A non-rectangular frame lives in the document frame list the object's
     // view names; the setter leaves an equal path byte for byte. A stored
@@ -499,7 +594,13 @@ pub(super) fn write_object(
 }
 
 /// Writes one style run's character properties into object `object`.
-fn write_run(block: &[u8], object: usize, run: usize, spec: &RunSpec) -> Result<Vec<u8>, Error> {
+fn write_run(
+    block: &[u8],
+    object: usize,
+    run: usize,
+    spec: &RunSpec,
+    auto_leading_pt: Option<f32>,
+) -> Result<Vec<u8>, Error> {
     let mut out = block.to_vec();
     if let Some(name) = &spec.font {
         // A hand-built/minimal block may carry no font table at all; the run then
@@ -539,7 +640,13 @@ fn write_run(block: &[u8], object: usize, run: usize, spec: &RunSpec) -> Result<
             txt2::RunProperty::Leading,
             TxtValue::Real(f64::from(v)),
         )?;
-    } else if let Some(auto) = spec.auto_leading {
+    } else {
+        // No explicit leading: the model means auto leading (a `None` pair),
+        // and Photoshop writes `AutoLeading true` plus the computed line height
+        // (`size x 1.2`; measured 48 pt -> 57.6, 22 pt -> 26.4 by the
+        // writer-parity oracle). Leaving the template's stale `/6/5` is what
+        // made a 22 pt run keep the 48 pt template's 57.6.
+        let auto = spec.auto_leading.unwrap_or(true);
         out = set_run_value(
             &out,
             object,
@@ -547,6 +654,20 @@ fn write_run(block: &[u8], object: usize, run: usize, spec: &RunSpec) -> Result<
             txt2::RunProperty::AutoLeading,
             TxtValue::Bool(auto),
         )?;
+        if auto {
+            let leading = auto_leading_pt
+                .map(f64::from)
+                .or_else(|| spec.size.map(|size| f64::from(size) * 1.2));
+            if let Some(leading) = leading {
+                out = set_run_value(
+                    &out,
+                    object,
+                    run,
+                    txt2::RunProperty::Leading,
+                    TxtValue::Real((leading * 1000.0).round() / 1000.0),
+                )?;
+            }
+        }
     }
     if let Some(v) = spec.tracking {
         out = set_run_value(
@@ -555,6 +676,15 @@ fn write_run(block: &[u8], object: usize, run: usize, spec: &RunSpec) -> Result<
             run,
             txt2::RunProperty::Tracking,
             TxtValue::Int(i64::from(v)),
+        )?;
+    }
+    if let Some(v) = spec.baseline {
+        out = set_run_value(
+            &out,
+            object,
+            run,
+            txt2::RunProperty::FontBaseline,
+            TxtValue::Int(v),
         )?;
     }
     if let Some(v) = spec.baseline_shift {
@@ -626,14 +756,14 @@ fn write_run(block: &[u8], object: usize, run: usize, spec: &RunSpec) -> Result<
         object,
         run,
         txt2::RunProperty::Strikethrough,
-        TxtValue::Int(if spec.strikethrough { 2 } else { 0 }),
+        TxtValue::Int(strike_code(spec)),
     )?;
     out = set_run_value(
         &out,
         object,
         run,
         txt2::RunProperty::Underline,
-        TxtValue::Int(if spec.underline { 2 } else { 0 }),
+        TxtValue::Int(underline_code(spec)),
     )?;
     out = set_run_value(
         &out,
@@ -789,11 +919,16 @@ fn features_agree(
         }
     }
     let salt = features.iter().any(|f| f.tag == "salt" && f.value > 0);
-    if !flag_agrees(block, object, run, txt2::RunProperty::StylisticAlternates.key(), salt) {
+    if !flag_agrees(
+        block,
+        object,
+        run,
+        txt2::RunProperty::StylisticAlternates.key(),
+        salt,
+    ) {
         return false;
     }
-    run_integer(block, object, run, txt2::RunProperty::StylisticSets.key())
-        .unwrap_or(0)
+    run_integer(block, object, run, txt2::RunProperty::StylisticSets.key()).unwrap_or(0)
         == stylistic_set_mask(features).unwrap_or(0)
 }
 
@@ -1102,8 +1237,8 @@ fn run_flags_agree(block: &[u8], object: usize, run: usize, spec: &RunSpec) -> b
     let integer = |key: &str, want: i64| integer_agrees(block, object, run, key, want);
     flag("2", spec.bold)
         && flag("3", spec.italic)
-        && integer("15", if spec.strikethrough { 2 } else { 0 })
-        && integer("16", if spec.underline { 2 } else { 0 })
+        && integer("15", strike_code(spec))
+        && integer("16", underline_code(spec))
         && integer("12", caps_code(spec))
         && integer("30", if spec.old_style { 2 } else { 0 })
         && spec.ligatures.is_none_or(|on| flag("18", on))
@@ -1180,7 +1315,12 @@ mod tests {
             after.path.as_ref().expect("path after"),
         );
         assert_eq!(a.closed, b.closed, "{what}: closed");
-        assert!((a.start - b.start).abs() <= 1e-4, "{what}: start {} vs {}", a.start, b.start);
+        assert!(
+            (a.start - b.start).abs() <= 1e-4,
+            "{what}: start {} vs {}",
+            a.start,
+            b.start
+        );
         assert_eq!(a.end.is_some(), b.end.is_some(), "{what}: end presence");
         if let (Some(x), Some(y)) = (a.end, b.end) {
             assert!((x - y).abs() <= 1e-4, "{what}: end {x} vs {y}");
@@ -1191,7 +1331,9 @@ mod tests {
         assert_eq!(a.knots.len(), b.knots.len(), "{what}: knot count");
         for (i, (x, y)) in a.knots.iter().zip(&b.knots).enumerate() {
             assert!(
-                close(x.anchor, y.anchor) && close(x.in_ctrl, y.in_ctrl) && close(x.out_ctrl, y.out_ctrl),
+                close(x.anchor, y.anchor)
+                    && close(x.in_ctrl, y.in_ctrl)
+                    && close(x.out_ctrl, y.out_ctrl),
                 "{what}: knot {i} moved: {x:?} vs {y:?}"
             );
             assert_eq!(x.smooth, y.smooth, "{what}: knot {i} smoothing");
@@ -1237,8 +1379,15 @@ mod tests {
                 let path = shape.path.clone().expect("decoded path");
                 assert_eq!(stored.kind, 1, "{source} {name}: area frame kind");
                 assert_eq!(stored.points.len(), 32, "{source} {name}: box path numbers");
-                assert!(path.closed && path.knots.len() == 4, "{source} {name}: rectangle path");
-                assert_eq!(path.kind.as_deref(), Some("box"), "{source} {name}: kind name");
+                assert!(
+                    path.closed && path.knots.len() == 4,
+                    "{source} {name}: rectangle path"
+                );
+                assert_eq!(
+                    path.kind.as_deref(),
+                    Some("box"),
+                    "{source} {name}: kind name"
+                );
 
                 let mut copy = PsdFile::from_bytes(&bytes).expect("parse copy");
                 author_layer(&mut copy, index, &spec, &fonts)
@@ -1249,7 +1398,10 @@ mod tests {
                 // `Txt2` block is byte for byte the file's.
                 let before = file.txt2().expect("txt2");
                 let after = copy.txt2().expect("txt2");
-                assert_eq!(before, after, "{source} {name}: re-author changed the Txt2 block");
+                assert_eq!(
+                    before, after,
+                    "{source} {name}: re-author changed the Txt2 block"
+                );
                 for object in 0..8 {
                     assert_eq!(
                         txt2::object_frame_path(before, object),
@@ -1293,9 +1445,24 @@ mod tests {
         let mut spec = read_layer(&file, index).expect("read layer");
         // An open wave in text space, its start moved into the curve.
         let knots = vec![
-            PathKnot { anchor: [10.0, 100.0], in_ctrl: [10.0, 100.0], out_ctrl: [40.0, 40.0], smooth: Some(false) },
-            PathKnot { anchor: [110.0, 70.0], in_ctrl: [80.0, 70.0], out_ctrl: [140.0, 70.0], smooth: Some(true) },
-            PathKnot { anchor: [210.0, 40.0], in_ctrl: [180.0, 40.0], out_ctrl: [210.0, 40.0], smooth: Some(false) },
+            PathKnot {
+                anchor: [10.0, 100.0],
+                in_ctrl: [10.0, 100.0],
+                out_ctrl: [40.0, 40.0],
+                smooth: Some(false),
+            },
+            PathKnot {
+                anchor: [110.0, 70.0],
+                in_ctrl: [80.0, 70.0],
+                out_ctrl: [140.0, 70.0],
+                smooth: Some(true),
+            },
+            PathKnot {
+                anchor: [210.0, 40.0],
+                in_ctrl: [180.0, 40.0],
+                out_ctrl: [210.0, 40.0],
+                smooth: Some(false),
+            },
         ];
         spec.shape = Some(ShapeSpec {
             frame: None,
@@ -1324,13 +1491,16 @@ mod tests {
         assert_eq!(path.knots.len(), knots.len());
         for (i, (a, b)) in path.knots.iter().zip(&knots).enumerate() {
             assert!(
-                close(a.anchor, b.anchor) && close(a.in_ctrl, b.in_ctrl) && close(a.out_ctrl, b.out_ctrl),
+                close(a.anchor, b.anchor)
+                    && close(a.in_ctrl, b.in_ctrl)
+                    && close(a.out_ctrl, b.out_ctrl),
                 "knot {i} moved: {a:?} vs {b:?}"
             );
         }
         // Re-authoring the read-back spec is a no-op.
         let block = copy.txt2().expect("txt2").to_vec();
-        let mut again = PsdFile::from_bytes(&copy.to_bytes().expect("serialize")).expect("parse twice");
+        let mut again =
+            PsdFile::from_bytes(&copy.to_bytes().expect("serialize")).expect("parse twice");
         author_layer(&mut again, index, &reread, &fonts).expect("re-author");
         assert_eq!(again.txt2().expect("txt2"), block.as_slice());
     }

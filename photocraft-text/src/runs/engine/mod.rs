@@ -95,7 +95,7 @@ pub fn ensure_engine_font(root: &mut Value, name: &str) -> Option<usize> {
     fonts.push(Value::dict([
         ("Name", Value::Str(name.to_owned())),
         ("Script", Value::Int(0)),
-        ("FontType", Value::Int(0)),
+        ("FontType", Value::Int(1)),
         ("Synthetic", Value::Int(0)),
     ]));
     Some(fonts.len() - 1)
@@ -156,6 +156,14 @@ pub const OPENTYPE_KEYS: [(&str, &str); 8] = [
     ("Ordinals", "ordn"),
     ("Fractions", "frac"),
 ];
+
+/// The subset of [`OPENTYPE_KEYS`] Photoshop mirrors into `EngineData`.
+///
+/// Measured by `psd-text-io` on PS 20 (`out/verify/sync/writer-parity.md`):
+/// `frac`/`ordn`/`swsh`/`titl`/`ornm`/`salt` stay `Txt2`-only (`/6/23,24,25,
+/// 26,29,28`); PS rewrites those `EngineData` keys away, so writing them makes
+/// the block differ. `calt` and `onum` are still mirrored.
+pub const ENGINE_FEATURE_KEYS: [(&str, &str); 1] = [("ContextualLigatures", "calt")];
 
 const CAPS_SMALL: i64 = 1;
 const CAPS_ALL: i64 = 2;

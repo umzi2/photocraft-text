@@ -127,6 +127,28 @@ pub struct Seac {
     pub achar: u8,
 }
 
+/// Type 2 hint operators a glyph's charstring used, in order: what CoolType's
+/// grid-fitter consumes before it draws the outline.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CharstringHints {
+    /// `hstem`/`hstemhm` pairs.
+    pub hstem: usize,
+    /// `vstem`/`vstemhm` pairs.
+    pub vstem: usize,
+    /// A `hintmask` occurred (its mask bytes follow in the charstring).
+    pub hintmask: bool,
+    /// A `cntrmask` occurred.
+    pub cntrmask: bool,
+    /// A flex operator (`flex`/`hflex`/`hflex1`/`flex1`) occurred.
+    pub flex: bool,
+    /// `endchar`'s four-operand `seac` form.
+    pub seac: Option<Seac>,
+    /// `vstem`/`vstemhm` zones in font units as `(x1, x2)` (cumulative).
+    pub vstems: Vec<(f64, f64)>,
+    /// `hstem`/`hstemhm` zones in font units as `(y1, y2)` (cumulative).
+    pub hstems: Vec<(f64, f64)>,
+}
+
 /// The Private DICT of a font (or of one CID font dict).
 #[derive(Clone, Debug, Default)]
 struct Private<'a> {
@@ -152,6 +174,7 @@ pub struct Cff<'a> {
     cid: Option<Cid<'a>>,
     default_width_x: Option<f64>,
     nominal_width_x: Option<f64>,
+    bbox_value: Option<[f64; 4]>,
 }
 
 impl<'a> Cff<'a> {
@@ -176,8 +199,14 @@ impl<'a> Cff<'a> {
         let mut fd_array_off = None;
         let mut fd_select_off = None;
         let mut is_cid = false;
+        let mut font_bbox = None;
         for (op, operands) in parse_dict(top_data)? {
             match op {
+                5 => {
+                    if let [x0, y0, x1, y1, ..] = operands[..] {
+                        font_bbox = Some([x0, y0, x1, y1]);
+                    }
+                }
                 17 => charstrings_off = operands.first().copied(),
                 18 => {
                     if operands.len() >= 2 {
@@ -231,6 +260,7 @@ impl<'a> Cff<'a> {
             cid,
             default_width_x,
             nominal_width_x,
+            bbox_value: font_bbox,
         })
     }
 
@@ -242,6 +272,12 @@ impl<'a> Cff<'a> {
     /// Outline of `gid` in font units, plus `seac` components when the glyph is
     /// an accented composite built by `endchar`.
     pub fn outline(&self, gid: u16) -> Result<(Path, Option<Seac>)> {
+        let (path, hints) = self.outline_with_hints(gid)?;
+        Ok((path, hints.seac))
+    }
+
+    /// [`outline`] plus the Type 2 hint operators the charstring used.
+    pub fn outline_with_hints(&self, gid: u16) -> Result<(Path, CharstringHints)> {
         let code = self
             .charstrings
             .get(gid as usize)
@@ -271,10 +307,263 @@ impl<'a> Cff<'a> {
             seac: None,
             transient: Vec::new(),
             rng: 0x2545_f491_4f6c_dd1d,
+            hints: CharstringHints::default(),
         };
         interp.exec(code, 0)?;
         interp.finish_contour();
-        Ok((interp.path, interp.seac))
+        Ok((interp.path, interp.hints))
+    }
+
+    /// CoolType's stem fit (raster-spec §6b): hint in device space, then round
+    /// every `vstem`/`hstem` zone edge to the nearest **1/4 px**, applied after
+    /// the quarter-phase pen. Points that sit on a fitted edge move with it;
+    /// everything else keeps the raw outline. `scale` is px per font unit.
+    pub fn fit_stems_to_quarter(
+        &self,
+        gid: u16,
+        scale: f32,
+        pen_x: f32,
+        baseline: f32,
+        aa: i32,
+    ) -> Result<Path> {
+        let (path, hints) = self.outline_with_hints(gid)?;
+        if hints.vstems.is_empty() && hints.hstems.is_empty() {
+            return Ok(path);
+        }
+        let q = |v: f32| (v * 4.0).round() / 4.0;
+        let rule = std::env::var("PHOTOCRAFT_FIT_RULE").unwrap_or_else(|_| "floor".into());
+        // Coupling probe (cooltype): move every fitted edge off the 1/4 lattice
+        // by a fixed device-px amount *after* the fit, to test whether the
+        // grid sampler's advantage depends on edges sitting on the lattice.
+        let edge_shift: f32 = std::env::var("PHOTOCRAFT_FIT_EDGE_SHIFT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0);
+        // Device-space edges per zone, then the candidate rule's target for
+        // each edge. Every rule works on (device edge -> fitted edge) pairs, so
+        // an outline point sitting on an edge moves with it.
+        let mut x_regions: Vec<(f32, f32, f32, f32)> = Vec::new();
+        for (a, b) in &hints.vstems {
+            let (d1, d2) = (pen_x + *a as f32 * scale, pen_x + *b as f32 * scale);
+            let (l, r) = (d1.min(d2), d1.max(d2));
+            let (fl, fr) = ((l * 4.0).floor() / 4.0, (r * 4.0).floor() / 4.0);
+            let (cl, cr) = ((l * 4.0).ceil() / 4.0, (r * 4.0).ceil() / 4.0);
+            let width = ((r - l) * 4.0).round() / 4.0;
+            let width = width.max(0.25);
+            let (nl, nr) = match rule.as_str() {
+                "ceil" => (cl, cr),
+                "cl_fr" => (cl, fr),
+                "fl_cr" => (fl, cr),
+                "wf_floor" => (fl, fl + width),
+                "wf_ceil" => (cl, cl + width),
+                "wfc" => {
+                    let c = (l + r) * 0.5;
+                    (q(c - width * 0.5), q(c + width * 0.5))
+                }
+                // Width-first with a 1/2-px width step and quarter-lattice edges
+                // (cooltype §6d): fitted stem widths are k/2, edges land on 1/4.
+                "w2" | "w2s" => {
+                    let half = ((r - l) * 2.0).round().max(0.5) / 2.0;
+                    let c = (l + r) * 0.5;
+                    let (el, er) = (c - half * 0.5, c + half * 0.5);
+                    if rule == "w2s" && (aa == 1 || aa == 4) {
+                        (((el * 4.0).floor()) / 4.0, (er * 4.0).round() / 4.0)
+                    } else {
+                        (q(el), q(er))
+                    }
+                }
+                // Whole-pixel variants (large ppem): edges/width on the pixel grid.
+                "w2" | "w2s" => {
+                    let half = ((r - l) * 2.0).round().max(0.5) / 2.0;
+                    let c = (l + r) * 0.5;
+                    let (el, er) = (c - half * 0.5, c + half * 0.5);
+                    if rule == "w2s" && (aa == 1 || aa == 4) {
+                        (((el * 4.0).floor()) / 4.0, (er * 4.0).round() / 4.0)
+                    } else {
+                        (q(el), q(er))
+                    }
+                }
+                "px_round" => (l.round(), r.round()),
+                "px_floor" => (l.floor(), r.floor()),
+                "px_w" => {
+                    let wp = (r - l).round().max(1.0);
+                    let c = (l + r) * 0.5;
+                    ((c - wp * 0.5).round(), (c + wp * 0.5).round())
+                }
+                "hybrid" => {
+                    // Quarter lattice for thin stems and the Smooth-family
+                    // fitters; whole pixels once a Sharp/Crisp stem is wide
+                    // (CoolType's large-ppem Sharp path, raster-spec §6c).
+                    let sharp = aa == 1 || aa == 4;
+                    if sharp && r - l >= 6.0 {
+                        let wp = (r - l).round().max(1.0);
+                        let c = (l + r) * 0.5;
+                        ((c - wp * 0.5).round(), (c + wp * 0.5).round())
+                    } else {
+                        let c = (l + r) * 0.5;
+                        (q(c - width * 0.5), q(c + width * 0.5))
+                    }
+                }
+                _ => (fl, fr),
+            };
+            if std::env::var("PHOTOCRAFT_FIT_DEBUG").is_ok() {
+                eprintln!("vstem raw {l:.3}..{r:.3} -> {nl:.3}..{nr:.3} rule {rule}");
+            }
+            x_regions.push((l, r, nl + edge_shift, nr + edge_shift));
+        }
+        let mut y_regions: Vec<(f32, f32, f32, f32)> = Vec::new();
+        for (a, b) in &hints.hstems {
+            let (d1, d2) = (baseline - *a as f32 * scale, baseline - *b as f32 * scale);
+            let (l, r) = (d1.min(d2), d1.max(d2));
+            let (fl, fr) = ((l * 4.0).floor() / 4.0, (r * 4.0).floor() / 4.0);
+            let (cl, cr) = ((l * 4.0).ceil() / 4.0, (r * 4.0).ceil() / 4.0);
+            let width = (((r - l) * 4.0).round() / 4.0).max(0.25);
+            let (nl, nr) = match rule.as_str() {
+                "ceil" => (cl, cr),
+                "cl_fr" => (cl, fr),
+                "fl_cr" => (fl, cr),
+                "wf_floor" => (fl, fl + width),
+                "wf_ceil" => (cl, cl + width),
+                "wfc" => {
+                    let c = (l + r) * 0.5;
+                    (q(c - width * 0.5), q(c + width * 0.5))
+                }
+                "w2" | "w2s" => {
+                    let half = ((r - l) * 2.0).round().max(0.5) / 2.0;
+                    let c = (l + r) * 0.5;
+                    let (el, er) = (c - half * 0.5, c + half * 0.5);
+                    if rule == "w2s" && (aa == 1 || aa == 4) {
+                        (((el * 4.0).floor()) / 4.0, (er * 4.0).round() / 4.0)
+                    } else {
+                        (q(el), q(er))
+                    }
+                }
+                "px_round" => (l.round(), r.round()),
+                "px_floor" => (l.floor(), r.floor()),
+                "px_w" => {
+                    let wp = (r - l).round().max(1.0);
+                    let c = (l + r) * 0.5;
+                    ((c - wp * 0.5).round(), (c + wp * 0.5).round())
+                }
+                "hybrid" => {
+                    let sharp = aa == 1 || aa == 4;
+                    if sharp && r - l >= 6.0 {
+                        let wp = (r - l).round().max(1.0);
+                        let c = (l + r) * 0.5;
+                        ((c - wp * 0.5).round(), (c + wp * 0.5).round())
+                    } else {
+                        let c = (l + r) * 0.5;
+                        (q(c - width * 0.5), q(c + width * 0.5))
+                    }
+                }
+                _ => (fl, fr),
+            };
+            y_regions.push((l, r, nl + edge_shift, nr + edge_shift));
+        }
+        // Envelope rule (cooltype, measured at 60/80 pt Sharp): the glyph's
+        // vertical extremes are snapped to whole device pixels — round, not
+        // floor (60 pt cap top 209.560 -> 209, 80 pt 218.6 -> 219). The
+        // baseline stays fixed, so this is a stretch of the y range.
+        let envelope = std::env::var("PHOTOCRAFT_FIT_ENVELOPE").as_deref() == Ok("1")
+            && (aa == 1 || aa == 4);
+        let (mut top, mut bottom) = (f32::INFINITY, f32::NEG_INFINITY);
+        if envelope {
+            let mut visit = |pt: &Pt| {
+                let dev = baseline - pt.y * scale;
+                top = top.min(dev);
+                bottom = bottom.max(dev);
+            };
+            for contour in &path {
+                visit(&contour.start);
+                for seg in &contour.segs {
+                    match *seg {
+                        Seg::Line { to } => visit(&to),
+                        Seg::Quad { ctrl, to } => {
+                            visit(&ctrl);
+                            visit(&to);
+                        }
+                        Seg::Cubic { c1, c2, to } => {
+                            visit(&c1);
+                            visit(&c2);
+                            visit(&to);
+                        }
+                    }
+                }
+            }
+        }
+        let envelope: Option<(f32, f32, f32, f32)> = if envelope && bottom > top + 1.0e-3 {
+            let top2 = top.round();
+            let bottom2 = bottom.round();
+            if bottom2 > top2 + 1.0e-3 {
+                Some((top, top2, bottom, bottom2))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        // Region map: every point between a stem's raw edges interpolates
+        // linearly to the fitted edges, so the fitted stem's *interior* moves
+        // with it (CoolType moves whole stem/bar regions, not edge points).
+        let shift_x = |x: f32| {
+            let dev = pen_x + x * scale;
+            for (l, r, nl, nr) in &x_regions {
+                if dev >= *l - 1.0e-3 && dev <= *r + 1.0e-3 && *r > *l + 1.0e-6 {
+                    let t = (dev - *l) / (*r - *l);
+                    let nd = nl + t * (nr - nl);
+                    return x + (nd - dev) / scale;
+                }
+            }
+            x
+        };
+        let shift_y = |y: f32| {
+            let dev = baseline - y * scale;
+            let mut nd = dev;
+            for (l, r, nl, nr) in &y_regions {
+                if dev >= *l - 1.0e-3 && dev <= *r + 1.0e-3 && *r > *l + 1.0e-6 {
+                    let t = (dev - *l) / (*r - *l);
+                    nd = nl + t * (nr - nl);
+                    break;
+                }
+            }
+            if let Some((t0, t1, b0, b1)) = envelope {
+                nd = t1 + (nd - t0) * (b1 - t1) / (b0 - t0);
+            }
+            y - (nd - dev) / scale
+        };
+        let mut out = Path::new();
+        for contour in &path {
+            let start = Pt::new(shift_x(contour.start.x), shift_y(contour.start.y));
+            let mut segs = Vec::with_capacity(contour.segs.len());
+            for seg in &contour.segs {
+                segs.push(match *seg {
+                    Seg::Line { to } => Seg::Line {
+                        to: Pt::new(shift_x(to.x), shift_y(to.y)),
+                    },
+                    Seg::Quad { ctrl, to } => Seg::Quad {
+                        ctrl: Pt::new(shift_x(ctrl.x), shift_y(ctrl.y)),
+                        to: Pt::new(shift_x(to.x), shift_y(to.y)),
+                    },
+                    Seg::Cubic { c1, c2, to } => Seg::Cubic {
+                        c1: Pt::new(shift_x(c1.x), shift_y(c1.y)),
+                        c2: Pt::new(shift_x(c2.x), shift_y(c2.y)),
+                        to: Pt::new(shift_x(to.x), shift_y(to.y)),
+                    },
+                });
+            }
+            out.push(Contour { start, segs });
+        }
+        Ok(out)
+    }
+
+    /// The font's transformation matrix (`FontMatrix`, default `0.001`).
+    pub fn font_matrix(&self) -> [f64; 6] {
+        self.font_matrix
+    }
+
+    /// The `FontBBox` the Top DICT stores, in charstring units.
+    pub fn font_bbox(&self) -> Option<[f64; 4]> {
+        self.bbox_value
     }
 
     /// `defaultWidthX` from the Private/Top DICT, if present.
@@ -482,6 +771,8 @@ struct Interp<'a> {
     transient: Vec<f64>,
     /// Deterministic state for the `random` operator.
     rng: u64,
+    /// Hint operators seen so far (for `outline_with_hints`).
+    hints: CharstringHints,
 }
 
 /// Pops the whole stack without consuming a width operand (escape operators are
@@ -655,12 +946,14 @@ impl<'a> Interp<'a> {
         self.finish_contour();
         if args.len() >= 4 {
             let (adx, ady) = self.map_vector(args[0], args[1]);
-            self.seac = Some(Seac {
+            let seac = Seac {
                 adx,
                 ady,
                 bchar: args[2] as i64 as u8,
                 achar: args[3] as i64 as u8,
-            });
+            };
+            self.seac = Some(seac);
+            self.hints.seac = Some(seac);
         }
     }
 
@@ -670,11 +963,47 @@ impl<'a> Interp<'a> {
         match b {
             1 | 3 | 18 | 23 => {
                 let args = self.take_args(false);
-                self.hint_count += args.len() / 2;
+                let stems = args.len() / 2;
+                self.hint_count += stems;
+                let horizontal = b == 1 || b == 18;
+                if horizontal {
+                    self.hints.hstem += stems;
+                } else {
+                    self.hints.vstem += stems;
+                }
+                if std::env::var("PHOTOCRAFT_FIT_DEBUG").is_ok() {
+                    eprintln!("stem op {b} args {args:?}");
+                }
+                for pair in args.chunks_exact(2) {
+                    // Type 2 stem pairs are `(position, width)`: the second
+                    // operand is the *delta* to the other edge (may be negative).
+                    let (p0, w0) = (pair[0], pair[1]);
+                    let (a, b2) = if horizontal {
+                        (
+                            self.map(0.0, p0).y as f64,
+                            self.map(0.0, p0 + w0).y as f64,
+                        )
+                    } else {
+                        (
+                            self.map(p0, 0.0).x as f64,
+                            self.map(p0 + w0, 0.0).x as f64,
+                        )
+                    };
+                    if horizontal {
+                        self.hints.hstems.push((a, b2));
+                    } else {
+                        self.hints.vstems.push((a, b2));
+                    }
+                }
                 Ok(0)
             }
             19 | 20 => {
                 let args = self.take_args(false);
+                if b == 19 {
+                    self.hints.hintmask = true;
+                } else {
+                    self.hints.cntrmask = true;
+                }
                 self.hint_count += args.len() / 2;
                 if self.mask_bytes == 0 {
                     self.mask_bytes = self.hint_count.div_ceil(8);
@@ -880,6 +1209,7 @@ impl<'a> Interp<'a> {
         match esc {
             // flex
             35 => {
+                self.hints.flex = true;
                 let a = self.pop_all();
                 if a.len() < 13 {
                     return Err(bad("CFF flex arguments"));
@@ -890,6 +1220,7 @@ impl<'a> Interp<'a> {
             }
             // hflex: dx1 dx2 dy2 dx3 dx4 dx5 dx6
             34 => {
+                self.hints.flex = true;
                 let a = self.pop_all();
                 if a.len() < 7 {
                     return Err(bad("CFF hflex arguments"));
@@ -902,6 +1233,7 @@ impl<'a> Interp<'a> {
             }
             // hflex1: dx1 dy1 dx2 dy2 dx3 dx4 dx5 dy5 dx6
             36 => {
+                self.hints.flex = true;
                 let a = self.pop_all();
                 if a.len() < 9 {
                     return Err(bad("CFF hflex1 arguments"));
@@ -915,6 +1247,7 @@ impl<'a> Interp<'a> {
             }
             // flex1: dx1 dy1 dx2 dy2 dx3 dy3 dx4 dy4 dx5 dy5 d6
             37 => {
+                self.hints.flex = true;
                 let a = self.pop_all();
                 if a.len() < 11 {
                     return Err(bad("CFF flex1 arguments"));

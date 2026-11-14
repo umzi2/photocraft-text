@@ -83,6 +83,26 @@
 //!   `point_styles` −20 B = 10 units and `point_center` −28 B = 20 units plus
 //!   the `Txt2` deltas above (TySh −40, Txt2 block +12).
 //!
+//! **EngineData parity re-record (2026-11-14, `txt2-writer`).** The five
+//! `models/*.engine.bin` writer outputs moved by exactly the keys the parity
+//! work changed, nothing else (audited with `examples/ed_file_diff.rs` against
+//! `git show HEAD:./tests/assets/models/<name>.engine.bin`):
+//!
+//! | model | delta | leaves |
+//! |---|---|---|
+//! | `area_composer` | +1 B | 1 paragraph run: `HyphenatedWordSize 0→6`, `PreHyphen 0→2`, `PostHyphen 0→2`, `Zone 0→36` (+1 B for `36`); `FontSet[3].FontType 0→1` |
+//! | `area_paragraphs` | +2 B | 2 paragraph runs of the same four hyphenation slots (+1 B each for `Zone 36`) |
+//! | `point_center` | +2 B | 2 paragraph runs, same four slots (two `Zone` widenings) |
+//! | `point_plain` | +1 B | 1 paragraph run, same four slots plus `ConsecutiveHyphens 0→8`, one `Zone` widening |
+//! | `point_styles` | +2 B | 2 paragraph runs of the same five slots, two `Zone` widenings, `FontSet[3].FontType 0→1` |
+//!
+//! The causes are the measured Photoshop forms: (a) hyphenation detail slots are
+//! written even when hyphenation is off (`6/2/2/8/36`, from PS's own
+//! `10_all_features.psd`), (b) real faces are `FontType 1`, and (c) numeric
+//! values use PS's shortest form (`36`, not `36.0`), which is where the +1/+2
+//! bytes come from. `EngineData` structural equality is otherwise unchanged; no
+//! render or channel bytes moved. See `out/verify/sync/enginedata-parity.md`.
+//!
 //! A later behaviour fix re-recorded the two area cases (and their
 //! `tests/assets/models/*.engine.bin`): a frame change now also patches the
 //! `TySh` `EngineData` `/Rendered/Shapes/Children[0]/Cookie/Photoshop/BoxBounds`
@@ -115,7 +135,6 @@
 //! `photocraft_psd` pads layer tagged blocks to an even length and global tag
 //! blocks to 4 bytes, which is where the ±1/±2-byte block rounding comes from.
 
-
 //! The four vertical baselines (`vertical.pixels.bin`, `vertical.rgba.bin`,
 //! `vertical_fixed_rect.pixels.bin`, `vertical_fixed_rect.rgba.bin`) were
 //! re-recorded when vertical hard breaks started a new column: the
@@ -126,7 +145,6 @@
 //! unchanged) and only its pixel bytes moved. No other baseline moved for
 //! that fix; the two area-PSD re-records above are the `BoxBounds` change.
 
-
 //! `warp_arch.rgba.bin` was re-recorded when `warp::map_for` replaced the
 //! 50 %-fitted arch constant with Photoshop's computed arch style math (ported
 //! from the fork's `geom::warp::preset_grid`); only the pixel values inside the
@@ -134,7 +152,6 @@
 //! byte-identical, so no geometry moved). `warp_arc.rgba.bin` is **unchanged**:
 //! the arc style keeps its per-layer fitted grid, because the generic style math
 //! measured `.8981` IoU on layer 12 against the fitted grid's `.9323`.
-
 
 //! Five authored-PSD baselines were re-recorded when `EngineData::write` /
 //! `fmt_number` (`src/engine_data.rs:313`) started printing the shortest `f32`
@@ -243,8 +260,7 @@ fn golden(path: PathBuf, actual: &[u8]) {
     // `regen_*` tests cover the families that need a different construction).
     if std::env::var("REA_REGEN").as_deref() == Ok("1") {
         println!("re-recorded {} ({} bytes)", path.display(), actual.len());
-        std::fs::write(&path, actual)
-            .unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+        std::fs::write(&path, actual).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
         return;
     }
     let expected = std::fs::read(&path)
@@ -468,10 +484,7 @@ fn case_render_goldens(case: &Case) -> Vec<(String, Vec<u8>)> {
         case.name
     );
     let mut goldens = vec![
-        (
-            format!("{}.pixels.bin", case.name),
-            pixel_geometry(&pixels),
-        ),
+        (format!("{}.pixels.bin", case.name), pixel_geometry(&pixels)),
         (format!("{}.rgba.bin", case.name), pixels.rgba.clone()),
         (
             format!("{}.layout.bin", case.name),
@@ -528,7 +541,9 @@ fn regen_author_goldens() {
         author(&mut file, &case.spec, &store).expect("author original PSD");
         let psd = file.to_bytes().expect("serialize entire PSD");
         std::fs::write(
-            assets().join("goldens").join(format!("{}.psd.bin", case.name)),
+            assets()
+                .join("goldens")
+                .join(format!("{}.psd.bin", case.name)),
             &psd,
         )
         .expect("write psd golden");
@@ -560,8 +575,11 @@ fn regen_render_goldens() {
         Ok("1"),
         "set REA_REGEN=1 to confirm re-recording the checked-in goldens"
     );
-    for name in ["area_paragraphs", "area_composer"] {
-        for (golden, bytes) in case_render_goldens(&case(name)) {
+    let cases: Vec<String> = std::env::var("REA_REGEN_CASES")
+        .map(|list| list.split(',').map(str::to_owned).collect())
+        .unwrap_or_else(|_| vec!["area_paragraphs".into(), "area_composer".into()]);
+    for name in cases {
+        for (golden, bytes) in case_render_goldens(&case(&name)) {
             std::fs::write(assets().join("goldens").join(&golden), &bytes)
                 .unwrap_or_else(|e| panic!("write {golden}: {e}"));
             println!("re-recorded {golden} ({} bytes)", bytes.len());

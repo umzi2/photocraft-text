@@ -282,6 +282,7 @@ fn written_frames_read_back() {
                 range: frame.range,
                 flip: frame.flip,
                 matrix: frame.matrix,
+                vertical: None,
             }),
             "an unchanged shape must re-emit the stored frame"
         );

@@ -241,6 +241,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         match orientation {
             Orientation::Vertical => {
+                if std::env::var_os("PHOTOCRAFT_VTRACE").is_some() {
+                    let lay = photocraft_text::layer_render::layout_vertical_from_engine_data_in_rect(
+                        &store, &ed, &text, origin, frame.map(|f| (f[2] - f[0], f[3] - f[1])), target,
+                    )?;
+                    eprintln!("vtrace: box={:?} lines={} glyphs={} first={:?}", box_size, lay.lines.len(), lay.glyphs.len(), lay.lines.first());
+                    for (i, g) in lay.glyphs.iter().enumerate().take(12) {
+                        eprintln!("vtrace: glyph {i} y={:.4} x={:.4} adv={:.4}", g.y, g.x, g.advance);
+                    }
+                    // Exact float ink bounds along the column: each glyph's outline bbox scaled by
+                    // size/upem and placed at its pen. Read-only measurement for the stored-rect
+                    // rounding rule (24/25/26/27 pt probes).
+                    let vt_runs = photocraft_text::runs::from_engine_data(&ed);
+                    let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+                    for g in &lay.glyphs {
+                        let run = vt_runs.get(g.run);
+                        let size = run.and_then(|r| r.size).unwrap_or(12.0);
+                        let face = run
+                            .and_then(|r| r.font.as_deref())
+                            .and_then(|n| store.face(n));
+                        let Some(face) = face else { continue };
+                        let Ok(Some((_, ymin, _, ymax))) =
+                            photocraft_text::outline::glyph_bbox(&face, g.gid)
+                        else {
+                            continue;
+                        };
+                        let scale = size / face.units_per_em() as f32;
+                        lo = lo.min(g.y - ymax * scale);
+                        hi = hi.max(g.y - ymin * scale);
+                    }
+                    if lo.is_finite() && hi.is_finite() {
+                        eprintln!(
+                            "inktrace: along float [{lo:.4}, {hi:.4}] extent {:.4} floor {:.0} ceil {:.0} round {:.0}",
+                            hi - lo,
+                            (hi - lo).floor(),
+                            (hi - lo).ceil(),
+                            (hi - lo).round()
+                        );
+                    }
+                }
                 photocraft_text::layer_render::render_vertical_from_engine_data_in_rect(
                     &store, &ed, &text, origin, frame.map(|f| (f[2] - f[0], f[3] - f[1])), target,
                 )?

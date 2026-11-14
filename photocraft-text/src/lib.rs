@@ -7,6 +7,7 @@
 
 pub mod area;
 pub mod atlas;
+pub mod blend;
 pub mod composer;
 pub mod engine_data;
 pub mod error;

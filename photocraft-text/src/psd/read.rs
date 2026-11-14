@@ -138,6 +138,16 @@ pub fn read_layer(file: &PsdFile, layer_index: usize) -> Result<LayerSpec, Error
     if paragraphs.is_empty() {
         paragraphs = paragraphs_from_engine(engine.as_ref(), &engine_paragraphs);
     }
+    // `Txt2` and `EngineData` can disagree on a paragraph's auto-leading ratio
+    // (layer 05: `Txt2` 1.5, engine 1.2). Photoshop's run-sheet `Leading` uses
+    // the engine ratio, so the model takes it from there when it exists.
+    for (i, engine_para) in engine_paragraphs.iter().enumerate() {
+        if let Some(para) = paragraphs.get_mut(i) {
+            if engine_para.auto_leading.is_finite() && engine_para.auto_leading > 0.0 {
+                para.auto_leading = engine_para.auto_leading;
+            }
+        }
+    }
     let paragraph = paragraphs
         .first()
         .cloned()
@@ -362,8 +372,11 @@ fn txt2_run(
         Some(_) => None,
         None => engine.and_then(|run| run.kerning),
     };
+    // The engine is the authority here: PS's `Txt2` may carry a resolved
+    // `Leading` (e.g. 18 pt at a 1.5 paragraph ratio -> 27) while its
+    // `EngineData` still says `AutoLeading` with the 1.2 run height (21.6).
     let auto_leading =
-        flag(RunProperty::AutoLeading).or_else(|| engine.and_then(|r| r.auto_leading));
+        engine.and_then(|r| r.auto_leading).or_else(|| flag(RunProperty::AutoLeading));
     let leading = match auto_leading {
         Some(true) => None,
         _ => real(RunProperty::Leading).or_else(|| engine.and_then(|run| run.leading)),
@@ -411,6 +424,8 @@ fn txt2_run(
         strikethrough: int(RunProperty::Strikethrough)
             .map(|code| code != 0)
             .unwrap_or_else(|| engine.is_some_and(|run| run.strikethrough)),
+        underline_type: int(RunProperty::Underline),
+        strike_type: int(RunProperty::Strikethrough),
         all_caps,
         small_caps,
         old_style: int(RunProperty::OldStyle)
@@ -423,7 +438,7 @@ fn txt2_run(
         language: int(RunProperty::Language).or_else(|| engine.and_then(|run| run.language)),
         // `EngineData` carries no stroke colour in the style-run reader, so the
         // paint is `Txt2`-only.
-        baseline: engine.and_then(|run| run.baseline),
+        baseline: int(RunProperty::FontBaseline).or_else(|| engine.and_then(|run| run.baseline)),
         rotate_roman: engine.and_then(|run| run.rotate_roman),
         features: txt2_features(block, object, index)
             .into_iter()
@@ -468,7 +483,9 @@ fn engine_run_specs(runs: &[RunStyle], units: usize) -> Vec<RunSpec> {
             bold: run.faux_bold,
             italic: run.faux_italic,
             underline: run.underline,
+            underline_type: None,
             strikethrough: run.strikethrough,
+            strike_type: None,
             all_caps: run.all_caps,
             small_caps: run.small_caps,
             old_style: run.old_style,
@@ -678,20 +695,20 @@ fn txt2_features(block: &[u8], object: usize, index: usize) -> Vec<crate::runs::
 
 /// Photoshop's code for a layout justification.
 ///
-/// `EngineData` cannot tell justify-all (`5`) from `6` (whose last line is
-/// flush left): the layout model has one `JustifyAll`. The precise code comes
-/// from `Txt2` `/5/0` whenever the block is current, so this only affects the
-/// `EngineData`-only fallback.
+/// Both `Txt2` `/5/0` and `EngineData` `Justification` use Photoshop's code
+/// space, measured with the 7-alignment oracle (`out/verify/sync/justify_probe.py`):
+/// `0` left, `1` right, `2` centre, `3` justify-last-left, `4` justify-last-right,
+/// `5` justify-last-centre, `6` justify-all.
 fn justification_code(justification: crate::area::Justification) -> i64 {
     use crate::area::Justification;
     match justification {
         Justification::Left => 0,
         Justification::Right => 1,
         Justification::Center => 2,
-        Justification::JustifyLastCenter => 3,
+        Justification::JustifyLastLeft => 3,
         Justification::JustifyLastRight => 4,
-        Justification::JustifyAll => 5,
-        Justification::JustifyLastLeft => 6,
+        Justification::JustifyLastCenter => 5,
+        Justification::JustifyAll => 6,
     }
 }
 

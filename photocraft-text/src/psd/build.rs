@@ -21,7 +21,7 @@ use crate::txt2;
 /// shape).
 pub fn build_engine_data(spec: &LayerSpec) -> crate::engine_data::Value {
     let text = author::spec_text(spec);
-    let mut styles = author::run_styles(&spec.runs);
+    let mut styles = author::run_styles(spec);
     let paragraphs = paragraph_runs(&text, spec);
     let mut root = engine_data::build_engine_data(&text, spec, &mut styles, &paragraphs);
     patch_paragraph_keys(&mut root, spec, paragraphs.len());
@@ -42,9 +42,58 @@ fn paragraph_runs(text: &str, spec: &LayerSpec) -> Vec<crate::runs::ParagraphRun
                 .unwrap_or(&spec.paragraph);
             // Each paragraph owns its break, so its run length is the piece
             // plus the U+000D (the last one the terminal break).
-            author::paragraph_run(piece, para)
+            let mut run = author::paragraph_run(piece, para);
+            // Photoshop writes the engine's hyphenation defaults even for a
+            // paragraph whose hyphenation is off (`10_all_features.psd`:
+            // 6/2/2/8/36 on every layer); `Txt2` stores zeros in that state, so
+            // the model's values cannot simply be mirrored.
+            if !para.hyphenate {
+                run.words_longer_than = 6;
+                run.pre_hyphen = 2;
+                run.post_hyphen = 2;
+                run.consecutive_hyphens = 8;
+                run.hyphen_zone = 36.0;
+            }
+            run
         })
         .collect()
+}
+
+/// The synthetic face PS uses for faux bold/italic: a second `FontSet` entry
+/// with the same name and `Synthetic` code (2 bold, 1 italic, 3 both).
+fn synthetic_font(root: &mut crate::engine_data::Value, name: &str, synthetic: i64) -> Option<i64> {
+    let fonts = root
+        .get_mut("ResourceDict")
+        .and_then(|r| r.get_mut("FontSet"))
+        .and_then(crate::engine_data::Value::as_array_mut)?;
+    fonts.push(crate::engine_data::Value::dict([
+        ("Name", crate::engine_data::Value::Str(name.to_owned())),
+        ("Script", crate::engine_data::Value::Int(0)),
+        ("FontType", crate::engine_data::Value::Int(1)),
+        ("Synthetic", crate::engine_data::Value::Int(synthetic)),
+    ]));
+    Some((fonts.len() - 1) as i64)
+}
+
+/// The auto-leading ratio of the paragraph covering `run_start` (UTF-16 units).
+fn paragraph_ratio_at(
+    paragraphs: &[crate::psd::ParagraphSpec],
+    fallback: &crate::psd::ParagraphSpec,
+    text: &str,
+    run_start: usize,
+) -> f32 {
+    if paragraphs.is_empty() {
+        return fallback.auto_leading;
+    }
+    let mut cursor = 0usize;
+    for (i, piece) in text.split('\r').enumerate() {
+        cursor += piece.encode_utf16().count() + 1;
+        if run_start < cursor || i == text.split('\r').count() - 1 {
+            let para = paragraphs.get(i).or_else(|| paragraphs.last()).unwrap_or(fallback);
+            return if para.auto_leading > 0.0 { para.auto_leading } else { 1.2 };
+        }
+    }
+    fallback.auto_leading
 }
 
 /// The two paragraph properties the shared paragraph model does not carry:
@@ -293,10 +342,7 @@ mod tests {
         engine: &'a crate::engine_data::Value,
         key: &str,
     ) -> Option<&'a crate::engine_data::Value> {
-        let shapes = engine
-            .get("EngineDict")?
-            .get("Rendered")?
-            .get("Shapes")?;
+        let shapes = engine.get("EngineDict")?.get("Rendered")?.get("Shapes")?;
         if key == "WritingDirection" {
             return shapes.get(key);
         }
@@ -330,7 +376,8 @@ mod tests {
                 let engine = crate::engine_data::parse(parsed.engine_data().expect("engine data"))
                     .expect("parse engine data");
                 assert_eq!(
-                    first_shape(&engine, "WritingDirection").and_then(crate::engine_data::Value::as_i64),
+                    first_shape(&engine, "WritingDirection")
+                        .and_then(crate::engine_data::Value::as_i64),
                     direction,
                     "frame {frame:?} orientation {orientation:?}"
                 );
@@ -396,9 +443,8 @@ mod tests {
                 );
             }
         }
-        let widened = crate::engine_data::write(&crate::engine_data::Value::Float(
-            0.800_000_011_920_929,
-        ));
+        let widened =
+            crate::engine_data::write(&crate::engine_data::Value::Float(0.800_000_011_920_929));
         assert!(
             widened.ends_with(b".8"),
             "the widened f32 must print as `.8`, got {:?}",
@@ -491,7 +537,7 @@ pub fn build_tysh_from(
 ) -> Result<Vec<u8>, Error> {
     let text = author::spec_text(spec);
     author::validate_runs(&text, &spec.runs)?;
-    let styles = author::run_styles(&spec.runs);
+    let styles = author::run_styles(spec);
     let paragraphs = author::paragraph_runs_for(&text, spec);
     let tysh = match template.and_then(|raw| TySh::from_bytes(raw).ok()) {
         Some(mut tysh) => {
@@ -545,7 +591,10 @@ pub fn build_tysh_from(
 /// This is the `Txt2` half of [`crate::psd::author_layer`]: each object's text
 /// and sheets are written (or kept when they already agree) and the block is
 /// returned for a caller that keeps its own document model.
-pub fn build_txt2(objects: &[(i32, &LayerSpec)], previous: Option<&[u8]>) -> Result<Vec<u8>, Error> {
+pub fn build_txt2(
+    objects: &[(i32, &LayerSpec)],
+    previous: Option<&[u8]>,
+) -> Result<Vec<u8>, Error> {
     let mut block = previous
         .map(<[u8]>::to_vec)
         .unwrap_or_else(|| author::NATIVE_TXT2_SCAFFOLD.to_vec());
@@ -553,8 +602,7 @@ pub fn build_txt2(objects: &[(i32, &LayerSpec)], previous: Option<&[u8]>) -> Res
         let text = author::spec_text(spec);
         author::validate_runs(&text, &spec.runs)?;
         let object = usize::try_from(*index).unwrap_or(0);
-        let agreed =
-            previous.is_some_and(|prev| author::object_agrees(prev, object, &text, spec));
+        let agreed = previous.is_some_and(|prev| author::object_agrees(prev, object, &text, spec));
         if !agreed {
             // A view must name a frame the list has, and every object this writer
             // creates names frame `object`: pad the list even for point text, or
@@ -570,10 +618,13 @@ pub fn build_txt2(objects: &[(i32, &LayerSpec)], previous: Option<&[u8]>) -> Res
 /// writer [`build_engine_data`] uses: a caller that keeps Photoshop's own
 /// `EngineData` (a `TySh` template it did not parse) edits it in place so every
 /// unmodelled key survives.
-pub fn apply_engine_data(root: &mut crate::engine_data::Value, spec: &LayerSpec) -> Result<(), Error> {
+pub fn apply_engine_data(
+    root: &mut crate::engine_data::Value,
+    spec: &LayerSpec,
+) -> Result<(), Error> {
     let text = author::spec_text(spec);
     author::validate_runs(&text, &spec.runs)?;
-    let mut styles = author::run_styles(&spec.runs);
+    let mut styles = author::run_styles(spec);
     let paragraphs = author::paragraph_runs_for(&text, spec);
     super::engine_data::apply_engine_data(root, &text, spec, &mut styles, &paragraphs);
     Ok(())

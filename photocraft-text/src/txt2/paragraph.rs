@@ -1,7 +1,8 @@
 use crate::error::Error;
 
 use super::path::{
-    Step, Value, ensure_container, ensure_value, format_real, replace_value, scalar_at, value_span,
+    Step, Value, ensure_container, ensure_value, format_real, read_path, replace_value, scalar_at,
+    value_span,
 };
 use super::syntax::tokens;
 use super::text::{paragraph_run_lengths_at, table_path_at};
@@ -132,14 +133,14 @@ pub enum Justification {
     Right,
     /// `2`.
     Center,
-    /// `3`.
-    JustifyLastCenter,
-    /// `4`.
-    JustifyLastRight,
-    /// `5`: justify every line, the last one included.
-    JustifyAll,
-    /// `6`: justify all but the last line (left).
+    /// `3`: justify all but the last line (left).
     JustifyLastLeft,
+    /// `4`: justify all but the last line (right).
+    JustifyLastRight,
+    /// `5`: justify all but the last line (centred).
+    JustifyLastCenter,
+    /// `6`: justify every line, the last one included.
+    JustifyAll,
 }
 
 impl Justification {
@@ -148,10 +149,10 @@ impl Justification {
             Self::Left => 0,
             Self::Right => 1,
             Self::Center => 2,
-            Self::JustifyLastCenter => 3,
+            Self::JustifyLastLeft => 3,
             Self::JustifyLastRight => 4,
-            Self::JustifyAll => 5,
-            Self::JustifyLastLeft => 6,
+            Self::JustifyLastCenter => 5,
+            Self::JustifyAll => 6,
         }
     }
 
@@ -161,10 +162,10 @@ impl Justification {
             0 => Self::Left,
             1 => Self::Right,
             2 => Self::Center,
-            3 => Self::JustifyLastCenter,
+            3 => Self::JustifyLastLeft,
             4 => Self::JustifyLastRight,
-            5 => Self::JustifyAll,
-            6 => Self::JustifyLastLeft,
+            5 => Self::JustifyLastCenter,
+            6 => Self::JustifyAll,
             _ => return None,
         })
     }
@@ -981,4 +982,65 @@ fn paragraph_number_at(
         Value::Real(v) => Some(v as f32),
         _ => None,
     }
+}
+
+/// Paragraph slots Photoshop only accepts as scalars.
+///
+/// A **non-empty dictionary** at `/27` or `/28` makes Photoshop refuse to open
+/// the document: `app.open` throws `General Photoshop error occurred. This
+/// functionality may not be available in this version` in ~35 ms and never
+/// saves, even though the file is structurally valid (`psd_tools` parses it and
+/// `Txt2` round-trips). An empty `<< >>` is tolerated and normalised to the
+/// slot's `/nil` default. The writer therefore clamps a non-empty dictionary at
+/// these two slots to `/nil` instead of serialising a document Photoshop cannot
+/// open (measured `out/verify/sync/cjk-survival3.json`).
+pub const SCALAR_ONLY_SLOTS: [&str; 2] = ["27", "28"];
+
+/// Whether `raw` (the bytes at a slot) is a non-empty dictionary.
+fn is_non_empty_dict(raw: &[u8]) -> bool {
+    let stripped: Vec<u8> = raw
+        .iter()
+        .copied()
+        .filter(|b| !b.is_ascii_whitespace())
+        .collect();
+    stripped.len() > 4 && stripped.starts_with(b"<<") && stripped.ends_with(b">>")
+}
+
+/// Paragraphs of `object` whose scalar-only slot holds a non-empty dictionary.
+///
+/// The returned pairs are `(paragraph index, slot key)`. Empty dictionaries are
+/// not reported: Photoshop tolerates them (it normalises them to the default).
+pub fn dict_slot_violations_at(
+    block: &[u8],
+    object: usize,
+) -> Result<Vec<(usize, &'static str)>, Error> {
+    let mut out = Vec::new();
+    for i in 0..paragraph_count_at(block, object)? {
+        for key in SCALAR_ONLY_SLOTS {
+            let mut path = paragraph_props_path_at(object, i);
+            path.push(Step::Key(key));
+            if let Some(raw) = read_path(block, &path)? {
+                if is_non_empty_dict(&raw) {
+                    out.push((i, key));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Clamps a non-empty dictionary at a scalar-only paragraph slot to `/nil`.
+///
+/// This is the writer's guard for [`SCALAR_ONLY_SLOTS`]: Photoshop cannot open
+/// a document that carries one, so [`super::psd`] authoring sanitises the
+/// `Txt2` block before storing it. Returns the block unchanged when there is
+/// nothing to clamp.
+pub fn sanitise_dict_slots_at(block: &[u8], object: usize) -> Result<Vec<u8>, Error> {
+    let mut out = block.to_vec();
+    for (i, key) in dict_slot_violations_at(&out, object)? {
+        let mut path = paragraph_props_path_at(object, i);
+        path.push(Step::Key(key));
+        out = super::path::replace_container(&out, &path, b"/nil")?;
+    }
+    Ok(out)
 }

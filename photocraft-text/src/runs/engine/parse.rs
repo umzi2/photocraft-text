@@ -280,9 +280,13 @@ fn parse_style_run(
         horizontal_scale: get("HorizontalScale").and_then(Value::as_f32),
         vertical_scale: get("VerticalScale").and_then(Value::as_f32),
         auto_kerning: get("AutoKerning").and_then(Value::as_bool),
+        // `Kerning: 0` is Photoshop's "no pair kerning" default (it writes it
+        // on every run, manual mode included), so zero is absent, not a manual
+        // amount; the manual amount lives in `Txt2` `/6/10`.
         kerning: get("Kerning")
             .and_then(Value::as_i64)
-            .and_then(|v| i16::try_from(v).ok()),
+            .and_then(|v| i16::try_from(v).ok())
+            .filter(|v| *v != 0),
         // Auto leading owns the line height: Photoshop writes a *computed*
         // absolute `Leading` beside `AutoLeading: true` (its own files carry
         // the line height there), so an auto run must not carry that number
@@ -293,6 +297,8 @@ fn parse_style_run(
             get("Leading").and_then(Value::as_f32)
         },
         auto_leading: get("AutoLeading").and_then(Value::as_bool),
+        underline_type: None,
+        strike_type: None,
         faux_bold: get("FauxBold").and_then(Value::as_bool).unwrap_or(false),
         faux_italic: get("FauxItalic").and_then(Value::as_bool).unwrap_or(false),
         underline: get("Underline").and_then(Value::as_bool).unwrap_or(false),

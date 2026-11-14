@@ -1,6 +1,7 @@
 use crate::error::Error;
 
-use super::path::{Step, format_real, replace_container, resolve};
+use super::path::{
+    ensure_container,Step, format_real, replace_container, resolve};
 use super::syntax::{Kind, Token, dict_entries, skip_value, tokens};
 
 /// Area-text frame rectangle, in the order stored in the `/1` array.
@@ -231,11 +232,86 @@ pub struct FramePath {
     /// caller can tell that a stored frame already describes the text-space
     /// points it was given. Never written: new frames use the identity.
     pub matrix: Option<[f64; 6]>,
+    /// `/2 /1`: the frame's writing direction. Photoshop writes `2` for a
+    /// vertical text frame and omits the key for horizontal text (measured:
+    /// PS-authored vertical box and point frames carry `/2 /1 2`, the same
+    /// frames horizontal carry no `/1`). `None` keeps the stored value.
+    pub vertical: Option<i64>,
 }
 
 /// Photoshop's point-text frame entry (what a fresh document pads its frame
 /// list with): no `/1` path, the default `/6` range and the point kind details.
 const POINT_FRAME: &str = "<< /0 << /2 << /6 [ -1.0 -1.0 ] /11 << /4 -1 /7 false >> >> >> >>";
+
+/// Writes the object's frame writing direction (`/0 /8 /0 [frame] /0 /2 /1`).
+///
+/// Photoshop's vertical text frames carry `/2 /1 2` and horizontal frames omit
+/// the key; the marker is what makes Photoshop open a file as vertical (a
+/// `TySh` `Ornt = Vrtc` alone is not enough — measured with the writer-parity
+/// oracle, a vertical layer authored from a horizontal template came back
+/// horizontal until the frame carried `/1 2`). `vertical = false` removes the
+/// key, keeping every other frame key Photoshop wrote.
+pub fn set_frame_vertical(block: &[u8], object: usize, vertical: bool) -> Result<Vec<u8>, Error> {
+    let toks = tokens(block)?;
+    let Some(name) = object_frame_name(&toks, object) else {
+        return Ok(block.to_vec());
+    };
+    let frame = usize::try_from(
+        toks[name]
+            .kind
+            .as_int()
+            .ok_or_else(|| Error::Txt2("frame name is not an integer".into()))?,
+    )
+    .map_err(|_| Error::Txt2("frame name is out of range".into()))?;
+    let data_path = [
+        Step::Key("0"),
+        Step::Key("8"),
+        Step::Key("0"),
+        Step::Index(frame),
+        Step::Key("0"),
+        Step::Key("2"),
+    ];
+    let Some(data_at) = resolve(&toks, &data_path) else {
+        if vertical {
+            return ensure_container(block, &data_path, b"<< /1 2 >>");
+        }
+        return Ok(block.to_vec());
+    };
+    if !matches!(toks[data_at].kind, Kind::DictOpen) {
+        return Ok(block.to_vec());
+    }
+    let entries =
+        dict_entries(&toks, data_at).ok_or_else(|| Error::Txt2("frame data is not a dict".into()))?;
+    let stored = entries
+        .iter()
+        .find(|(key, _)| key == "1")
+        .map(|(_, value)| *value);
+    let want = if vertical { Some(2) } else { None };
+    if stored.and_then(|at| toks[at].kind.as_int()) == want {
+        return Ok(block.to_vec());
+    }
+    let mut data = String::from("<<");
+    for (key, value) in &entries {
+        if key == "1" {
+            continue;
+        }
+        let key_at = value
+            .checked_sub(1)
+            .ok_or_else(|| Error::Txt2("frame entry has no key".into()))?;
+        let end =
+            skip_value(&toks, *value).ok_or_else(|| Error::Txt2("frame entry has no end".into()))?;
+        data.push(' ');
+        data.push_str(
+            &String::from_utf8(block[toks[key_at].start..toks[end - 1].end].to_vec())
+                .map_err(|_| Error::Txt2("frame entry is not UTF-8".into()))?,
+        );
+    }
+    if let Some(code) = want {
+        data.push_str(&format!(" /1 {code}"));
+    }
+    data.push_str(" >>");
+    replace_container(block, &data_path, data.as_bytes())
+}
 
 /// Grows the document frame list (`/0 /8 /0 [frame] /0`) to `count` entries,
 /// appending point-text frames for the missing ones. A block without a frame
@@ -378,6 +454,19 @@ pub fn frame_path(block: &[u8], frame: usize) -> Option<FramePath> {
         return None;
     }
     // `/2 /2`: the frame→text matrix, applied to the stored points.
+    let vertical = resolve(
+        &toks,
+        &[
+            Step::Key("0"),
+            Step::Key("8"),
+            Step::Key("0"),
+            Step::Index(frame),
+            Step::Key("0"),
+            Step::Key("2"),
+            Step::Key("1"),
+        ],
+    )
+    .and_then(|at| toks[at].kind.as_int());
     let matrix = resolve(
         &toks,
         &[
@@ -488,6 +577,7 @@ pub fn frame_path(block: &[u8], frame: usize) -> Option<FramePath> {
         range,
         flip,
         matrix: matrix.filter(|m| *m != [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+        vertical,
     })
 }
 

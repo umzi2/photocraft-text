@@ -51,8 +51,7 @@ mod read;
 
 pub use author::{author, author_layer};
 pub use build::{
-    apply_engine_data, build_engine_data, build_txt2, build_tysh, build_tysh_from,
-    refresh_pixels,
+    apply_engine_data, build_engine_data, build_txt2, build_tysh, build_tysh_from, refresh_pixels,
 };
 pub use engine_data::{set_frame, with_engine_data};
 pub use error::Error;

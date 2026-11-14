@@ -1,7 +1,10 @@
 use crate::engine_data::Value;
 
 use super::super::model::RunStyle;
-use super::{CAPS_ALL, CAPS_SMALL, COLOR_TYPE_RGB, OPENTYPE_KEYS, color_rgb, engine_language};
+use super::{
+    CAPS_ALL, CAPS_SMALL, COLOR_TYPE_RGB, ENGINE_FEATURE_KEYS, ENGINE_FEATURE_KEYS as OPENTYPE_KEYS,
+    color_rgb, engine_language,
+};
 
 /// Writes `styles` back into a layer's `EngineData` so other readers (and our
 /// own renderer) see the same run split Photoshop takes from `Txt2`.
@@ -63,14 +66,25 @@ pub fn apply_style_runs(root: &mut Value, styles: &[RunStyle]) -> bool {
             if let Some(v) = run.baseline_shift {
                 put("BaselineShift", Value::Float(f64::from(v)));
             }
-            if let Some(auto) = run.auto_leading_flag() {
+            // A run with neither an explicit leading nor an auto flag is
+            // auto-leading in the model (`RunStyle` keeps `leading: None`),
+            // and Photoshop recomposes it as `AutoLeading: true` with the
+            // computed line height; leaving the template's stale pair is what
+            // made a 22 pt run keep the 48 pt template's 57.6.
+            let auto = run.auto_leading_flag().unwrap_or(true);
+            {
                 put("AutoLeading", Value::Bool(auto));
                 if auto {
-                    // Photoshop's own form: with auto leading on, the absolute
-                    // `Leading` field is not the model's leading (Photoshop
-                    // recomputes it); write the neutral 0 so a re-read cannot
-                    // carry a stale `Leading/size` into the model ratio.
-                    put("Leading", Value::Float(0.0));
+                    // Photoshop's own form: auto leading writes the computed
+                    // line height beside the flag (`size x 1.2`; measured
+                    // 48 pt -> 57.6 by the writer-parity oracle). The reader
+                    // drops `Leading` while `AutoLeading` is true, so this is
+                    // Photoshop's mirror, not the model's leading.
+                    let leading = run
+                        .leading
+                        .map(f64::from)
+                        .unwrap_or_else(|| f64::from(run.size.unwrap_or(0.0)) * 1.2);
+                    put("Leading", Value::Float((leading * 1000.0).round() / 1000.0));
                 }
             }
             // Auto leading owns the field: a `Some` absolute value on an
@@ -81,15 +95,21 @@ pub fn apply_style_runs(root: &mut Value, styles: &[RunStyle]) -> bool {
             {
                 put("Leading", Value::Float(f64::from(v)));
             }
-            if let Some(auto) = run.auto_kerning {
-                put("AutoKerning", Value::Bool(auto));
-            }
-            if let Some(k) = run.kerning {
-                put("Kerning", Value::Int(i64::from(k)));
-            }
+            // Photoshop keeps the kerning *mode* in `Txt2` `/6/11` and writes
+            // `AutoKerning: true` with `Kerning: 0` in `EngineData` for every
+            // mode, manual included (writer-parity oracle: metrics, optical,
+            // off and manual 100 all recompose to `true`/`0`; the manual amount
+            // lives only in `Txt2` `/6/10` as 16.16 fixed point).
+            put("AutoKerning", Value::Bool(true));
+            put("Kerning", Value::Int(0));
             put("FauxBold", Value::Bool(run.faux_bold));
             put("FauxItalic", Value::Bool(run.faux_italic));
             put("Underline", Value::Bool(run.underline));
+            // `YUnderline` encodes the underline type (0 only for
+            // `UNDERLINELEFT`). `RunStyle` has no type field yet, so only the
+            // left-underline case this model can express is written inverted;
+            // a right/box underline stays a documented residual.
+            put("YUnderline", Value::Int(if run.underline { 0 } else { 1 }));
             put("Strikethrough", Value::Bool(run.strikethrough));
             put(
                 "FontCaps",
@@ -113,9 +133,11 @@ pub fn apply_style_runs(root: &mut Value, styles: &[RunStyle]) -> bool {
             if let Some(on) = run.no_break {
                 put("NoBreak", Value::Bool(on));
             }
-            if let Some(code) = run.baseline {
-                put("FontBaseline", Value::Int(code));
-            }
+            // Superscript/subscript live in `Txt2` `/6/13` *and* in this
+            // mirror: Photoshop's re-save of a run authored as super/sub keeps
+            // `/6/13 = 1/2` and writes the same code to `FontBaseline`
+            // (writer-parity oracle, `baseline_super`/`baseline_sub`).
+            put("FontBaseline", Value::Int(run.baseline.unwrap_or(0)));
             if let Some(roman) = run.rotate_roman {
                 // `BaselineDirection` 2 rotates roman text along a vertical
                 // column; 1 stands it upright one character per em.
@@ -203,9 +225,18 @@ fn sheet_for(run: &RunStyle) -> Vec<(String, Value)> {
     if let Some(auto) = run.auto_leading_flag() {
         put(&mut d, "AutoLeading", Value::Bool(auto));
         if auto {
-            // Photoshop's own form (see `sheet_for`): auto leading writes the
-            // neutral absolute `Leading` 0, never the computed line height.
-            put_num(&mut d, "Leading", 0.0);
+            // Photoshop's own form: auto leading writes the computed line
+            // height (`size x` the paragraph's `/5/7` ratio; measured
+            // 30->36, 26->31.2, 22->26.4 at 1.2 and 22 pt x 1.5 = 33.0).
+            let leading = run
+                .leading
+                .map(f64::from)
+                .unwrap_or_else(|| f64::from(run.size.unwrap_or(0.0)) * 1.2);
+            put(
+                &mut d,
+                "Leading",
+                Value::Float((leading * 1000.0).round() / 1000.0),
+            );
         }
     }
     if let Some(l) = run.leading
@@ -213,15 +244,20 @@ fn sheet_for(run: &RunStyle) -> Vec<(String, Value)> {
     {
         put_num(&mut d, "Leading", l);
     }
-    // `OldStyle` is EngineData's key for the `onum` feature; the sheet's own
-    // `Features` array is not modelled, so a run whose model says old-style
-    // must write the key itself or the figures read back as lining.
-    if run.old_style && !run.features.iter().any(|f| f.tag == "onum" && f.value > 0) {
-        put(&mut d, "OldStyle", Value::Bool(true));
-    }
+    // `onum`/`OldStyle` stays Txt2-only: PS 20 re-saves `/6/30 = 2` and does
+    // not mirror the key into `EngineData` (writer-parity `feat_oldstyle`), so
+    // an engine key here is a residual.
+    let _ = run.old_style;
     put(&mut d, "FauxBold", Value::Bool(run.faux_bold));
     put(&mut d, "FauxItalic", Value::Bool(run.faux_italic));
     put(&mut d, "Underline", Value::Bool(run.underline));
+    // PS writes `YUnderline` inverted (layer 01 underline -> 0, layer 02 -> 1);
+    // TODO(enginedata): confirm on vertical text.
+    put(
+        &mut d,
+        "YUnderline",
+        Value::Int(if run.underline { 0 } else { 1 }),
+    );
     put(&mut d, "Strikethrough", Value::Bool(run.strikethrough));
     put_caps(&mut d, run.all_caps, run.small_caps);
     if let Some(on) = run.ligatures {
@@ -247,8 +283,12 @@ fn sheet_for(run: &RunStyle) -> Vec<(String, Value)> {
         );
     }
     for feature in &run.features {
+        // Off is the default: PS omits the key instead of writing `false`.
+        if feature.value == 0 {
+            continue;
+        }
         if let Some((key, _)) = OPENTYPE_KEYS.iter().find(|(_, tag)| *tag == feature.tag) {
-            put(&mut d, key, Value::Bool(feature.value > 0));
+            put(&mut d, key, Value::Bool(true));
         }
     }
     d
@@ -262,8 +302,13 @@ fn put_features<'a>(
     features: &[super::super::model::RunFeature],
 ) {
     for feature in features {
+        // PS omits a feature key that is off; writing `false` for every
+        // modelled flag is what made 18 sheets differ from Photoshop's own.
+        if feature.value == 0 {
+            continue;
+        }
         if let Some((key, _)) = OPENTYPE_KEYS.iter().find(|(_, tag)| *tag == feature.tag) {
-            put(key, Value::Bool(feature.value > 0));
+            put(key, Value::Bool(true));
         }
     }
 }

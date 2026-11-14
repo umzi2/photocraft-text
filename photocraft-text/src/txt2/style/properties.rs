@@ -34,6 +34,11 @@ pub enum RunProperty {
     /// `/6 /11`: `0` manual, `1` metrics, `2` optical
     /// (`out/probe2/kerning_manual.psd` `1 -> 0`, `kerning_optical.psd` `1 -> 2`).
     KerningType,
+    /// `/6 /13`: `0` normal, `1` superscript, `2` subscript. Photoshop keeps
+    /// `FontBaseline 0` in `EngineData` for all three (measured with the
+    /// writer-parity oracle: a run authored as super/subscript keeps
+    /// `Txt2 /6/13` and re-saves `FontBaseline 0`).
+    FontBaseline,
     /// `/6 /12`: `0` normal, `1` small caps, `2` all caps
     /// (`out/verify/caps.psd` authored `2`; Photoshop re-rendered ALL CAPS in
     /// its PDF and kept `2` after re-save).
@@ -104,6 +109,7 @@ impl RunProperty {
             RunProperty::StylisticSets => "85",
             RunProperty::KerningType => "11",
             RunProperty::Capitalization => "12",
+            RunProperty::FontBaseline => "13",
             RunProperty::Strikethrough => "15",
             RunProperty::Underline => "16",
             RunProperty::Ligatures => "18",
@@ -132,6 +138,7 @@ impl RunProperty {
             Self::BaselineShift,
             Self::KerningType,
             Self::Capitalization,
+            Self::FontBaseline,
             Self::Strikethrough,
             Self::Underline,
             Self::Ligatures,

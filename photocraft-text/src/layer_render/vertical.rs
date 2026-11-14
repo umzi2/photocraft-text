@@ -173,6 +173,31 @@ fn vertical_impl(
     )
 }
 
+/// Along-column advance for one glyph. Photoshop advances a vertical column by
+/// exactly one em per **letter**; U+0020 advances by the **space glyph's own
+/// advance** (measured 2026-11-14: Myriad Pro 24 pt, `"abc def ghi"` recomposes
+/// to a 215 px column, the no-space control to 204 = our rect exactly, and the
+/// space glyph's advance is 5.088 px — 2 x 5.088 is the whole difference).
+/// Other whitespace is **unmeasured** and keeps the one-em behaviour.
+///
+/// This replaces an earlier "zero for U+0020" rule. That rule came from a
+/// *writer-path* file whose pixels were compared after both sides had been
+/// recomposed by Photoshop — such a comparison cannot see the rectangle rule,
+/// so it never proved a zero advance. Withdrawn 2026-11-14.
+fn along_advance(ch: char, size: f32, advance: f32) -> f32 {
+    if ch == ' ' { advance } else { size }
+}
+
+/// A column's along extent, i.e. the sum of its glyph advances (spaces add
+/// their own advance). Used for the justification offset and for the stored
+/// rectangle.
+fn column_extent(glyphs: &[crate::layout::GlyphPos], size: f32) -> f32 {
+    glyphs
+        .iter()
+        .map(|g| along_advance(g.ch, size, g.advance))
+        .sum::<f32>()
+}
+
 fn vertical_prepare<'a>(
     store: &'a FaceStore,
     ed: &Value,
@@ -288,30 +313,6 @@ fn vertical_prepare<'a>(
             group.3 = text.len();
         }
     }
-    // A column that runs past the box height starts a new one: soft wrap, with
-    // the same column advance as a hard break.
-    let per_column = box_size
-        .map(|(_, height)| height)
-        .filter(|height| *height > 0.0)
-        .map(|height| ((height / size).floor() as usize).max(1));
-    let mut columns: Vec<(
-        Vec<crate::layout::GlyphPos>,
-        Vec<runs::GlyphAttrs>,
-        usize,
-        usize,
-    )> = Vec::new();
-    for (glyphs, attrs, start, end) in groups {
-        let chunk = per_column.unwrap_or(usize::MAX);
-        if glyphs.is_empty() || chunk >= glyphs.len() {
-            columns.push((glyphs, attrs, start, end));
-            continue;
-        }
-        for (glyphs, attrs) in glyphs.chunks(chunk).zip(attrs.chunks(chunk)) {
-            let chunk_start = attrs.first().map_or(start, |a| a.source.0);
-            let chunk_end = attrs.last().map_or(end, |a| a.source.1);
-            columns.push((glyphs.to_vec(), attrs.to_vec(), chunk_start, chunk_end));
-        }
-    }
     // Column pitch follows the *leading* of the column's own paragraph, not
     // the em: Photoshop advances its vertical columns by the paragraph line
     // height (measured on the user's `hotfix_u12.psd` rasters: 36 px at 30 pt
@@ -323,6 +324,58 @@ fn vertical_prepare<'a>(
             .unwrap_or(size * ratio_of(paragraph))
             .max(f32::EPSILON)
     };
+    // A column that runs past the box height starts a new one: soft wrap, with
+    // the same column advance as a hard break. Photoshop wraps by the column
+    // *pitch* (the paragraph leading), not by the em: a 200 pt box at 24 pt
+    // with `AutoLeading 1.2` holds floor(200 / 28.8) = 6 cells, so
+    // `"abc def ghi"` starts its second column after "abc def" (measured:
+    // Photoshop's stored rect for that layer is 139 = 6 x 24 - ink crop; with
+    // the em rule it packed 8 letters and stored 186).
+    let mut columns: Vec<(
+        Vec<crate::layout::GlyphPos>,
+        Vec<runs::GlyphAttrs>,
+        usize,
+        usize,
+    )> = Vec::new();
+    for (group_index, (glyphs, attrs, start, end)) in groups.into_iter().enumerate() {
+        let chunk = box_size
+            .map(|(_, height)| ((height / pitch_of(group_index)).floor() as usize).max(1))
+            .unwrap_or(usize::MAX);
+        if glyphs.is_empty() || chunk >= glyphs.len() {
+            columns.push((glyphs, attrs, start, end));
+            continue;
+        }
+        // A box wraps when the column's *letters* fill the height: U+0020
+        // advances nothing, so it must not consume a cell at the break.
+        let mut chunk_glyphs: Vec<crate::layout::GlyphPos> = Vec::new();
+        let mut chunk_attrs: Vec<runs::GlyphAttrs> = Vec::new();
+        let mut cells = 0usize;
+        let total = glyphs.len();
+        for (i, (glyph, attr)) in glyphs.into_iter().zip(attrs).enumerate() {
+            chunk_glyphs.push(glyph);
+            chunk_attrs.push(attr);
+            if chunk_glyphs.last().is_some_and(|g| g.ch != ' ') {
+                cells += 1;
+            }
+            let last = i + 1 == total;
+            if !last && cells >= chunk {
+                let chunk_start = chunk_attrs.first().map_or(start, |a| a.source.0);
+                let chunk_end = chunk_attrs.last().map_or(end, |a| a.source.1);
+                columns.push((
+                    std::mem::take(&mut chunk_glyphs),
+                    std::mem::take(&mut chunk_attrs),
+                    chunk_start,
+                    chunk_end,
+                ));
+                cells = 0;
+            }
+        }
+        if !chunk_glyphs.is_empty() {
+            let chunk_start = chunk_attrs.first().map_or(start, |a| a.source.0);
+            let chunk_end = chunk_attrs.last().map_or(end, |a| a.source.1);
+            columns.push((chunk_glyphs, chunk_attrs, chunk_start, chunk_end));
+        }
+    }
     // A vertical paragraph box anchors its first column at the box's **right**
     // edge (columns advance right to left), not at the left edge the layer
     // transform names: anchoring at the left edge drew the whole block one box
@@ -363,8 +416,7 @@ fn vertical_prepare<'a>(
     let mut tallest = 0.0f32;
     let mut column_x = first_centre;
     let mut placed_any = false;
-    for (_index, (column_glyphs, attrs, range_start, range_end)) in columns.into_iter().enumerate()
-    {
+    for (column_glyphs, attrs, range_start, range_end) in columns {
         let paragraph = column_of(range_start);
         let pitch = pitch_of(paragraph);
         if placed_any {
@@ -395,16 +447,18 @@ fn vertical_prepare<'a>(
         placed_any = true;
         // The column's along start: its cell's justification offset inside the
         // frame, then our pen inside the cell.
-        let extent = column_glyphs.len() as f32 * size;
+        let extent = column_extent(&column_glyphs, size);
         let along_start = first_off + along_offset(paragraph, extent);
         let mut glyphs = Vec::with_capacity(column_glyphs.len());
-        for (placed, mut glyph) in column_glyphs.into_iter().enumerate() {
+        let mut along = 0.0f32;
+        for mut glyph in column_glyphs {
             glyph.x = column_x - glyph.advance * 0.5;
-            glyph.y = -(along_start + placed as f32 * size);
+            glyph.y = -(along_start + along);
+            along += along_advance(glyph.ch, size, glyph.advance);
             glyphs.push(glyph);
         }
         let width = glyphs.iter().map(|g| g.advance).fold(size, f32::max);
-        let along = (glyphs.len() as f32 * size).max(0.0);
+        let along = along.max(0.0);
         // Columns run leftwards, so the widest cross extent is the leftmost
         // column's far edge (|column_x| + its width), not a running maximum of
         // signed positions.
@@ -552,6 +606,34 @@ pub fn layout_vertical_from_engine_data_in_rect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Photoshop advances a vertical column one em per letter and the glyph's own
+    /// advance for U+0020. Measured 2026-11-14 (Myriad Pro 24 pt): the recomposed
+    /// column is 215 px for `"abc def ghi"` and 204 px without the spaces — the
+    /// no-space control matches our rect exactly — and the space glyph's advance is
+    /// 5.088 px, so 2 x 5.088 is the whole difference. The earlier "zero for
+    /// U+0020" rule (217 px) is withdrawn: it came from a writer-path comparison
+    /// that could not see the rectangle rule.
+    #[test]
+    fn spaces_advance_by_their_glyph_advance_and_letters_one_em() {
+        assert_eq!(along_advance(' ', 24.0, 5.088), 5.088);
+        assert_eq!(along_advance('a', 24.0, 12.0), 24.0);
+        assert_eq!(along_advance('\t', 24.0, 6.0), 24.0, "tab is unmeasured: keep one em");
+        assert_eq!(
+            along_advance('\u{3000}', 24.0, 24.0),
+            24.0,
+            "ideographic space is unmeasured: keep one em"
+        );
+        // The probe string: nine one-em letters plus both spaces' own advances.
+        let extent: f32 = "abc def ghi"
+            .chars()
+            .map(|c| along_advance(c, 24.0, 5.088))
+            .sum();
+        assert!((extent - (216.0 + 2.0 * 5.088)).abs() < 1e-4, "extent {extent}");
+        // Control: a no-space string is unchanged (one em per glyph).
+        let plain: f32 = "abcdefghi".chars().map(|c| along_advance(c, 24.0, 5.088)).sum();
+        assert_eq!(plain, 216.0);
+    }
 
     /// The anchor points the law was measured on, straight from Photoshop's
     /// composed cache (`/99 /L` `/10` of the first column, see

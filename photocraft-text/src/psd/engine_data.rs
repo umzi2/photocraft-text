@@ -128,6 +128,9 @@ pub(super) fn apply_engine_data(
         runs::set_fractional_glyph_widths(root, on);
     }
     set_frame(root, frame_of(spec));
+    if let Some(orientation) = spec.orientation {
+        set_writing_direction(root, orientation == 1);
+    }
     ensure_photoshop_scaffold(root);
     set_fill_flag(root);
     set_editor_text(root, text);
@@ -204,7 +207,12 @@ pub fn set_frame(root: &mut Value, frame: Option<[f32; 4]>) {
     match frame {
         Some([left, top, right, bottom]) => {
             photoshop.retain(|(k, _)| k != "PointBase");
-            let want = [f64::from(left), f64::from(top), f64::from(right), f64::from(bottom)];
+            let want = [
+                f64::from(left),
+                f64::from(top),
+                f64::from(right),
+                f64::from(bottom),
+            ];
             if !entry_mut(photoshop, "BoxBounds").is_some_and(|v| numbers_agree(v, &want)) {
                 set_entry(
                     photoshop,
@@ -224,6 +232,55 @@ pub fn set_frame(root: &mut Value, frame: Option<[f32; 4]>) {
                 );
             }
         }
+    }
+}
+
+/// Writes the writing direction into the `EngineData` shape tree.
+///
+/// Photoshop composes vertical text from `EngineDict/Rendered/Shapes/
+/// WritingDirection` (`2` vertical, `0` horizontal) and the matching
+/// `Children[0]/Procession` (`1`/`0`) plus `Children[0]/Lines/
+/// WritingDirection`. The `TySh` header's `Ornt` alone is not enough: a layer
+/// whose `Ornt` says `Vrtc` but whose engine tree still says `0` opens and
+/// re-saves **horizontal** in Photoshop (measured with the writer-parity
+/// oracle: every vertical probe authored from a horizontal template flipped
+/// `Ornt` to `Hrzn`, and copying the `WritingDirection 2` shape tree from a
+/// Photoshop-authored vertical file kept `Vrtc`). Every other shape key
+/// Photoshop wrote is kept.
+pub fn set_writing_direction(root: &mut Value, vertical: bool) {
+    let writing = if vertical { 2 } else { 0 };
+    let Some(engine) = root.get_mut("EngineDict").and_then(Value::as_dict_mut) else {
+        return;
+    };
+    let Some(rendered) = dict_entry(engine, "Rendered") else {
+        return;
+    };
+    let Some(shapes) = dict_entry(rendered, "Shapes") else {
+        return;
+    };
+    set_entry(shapes, "WritingDirection", Value::Int(writing));
+    if !shapes.iter().any(|(k, _)| k == "Children") {
+        shapes.push(("Children".to_string(), Value::Array(Vec::new())));
+    }
+    let Some(children) = entry_mut(shapes, "Children").and_then(Value::as_array_mut) else {
+        return;
+    };
+    if children.is_empty() {
+        children.push(Value::dict([("ShapeType", Value::Int(0))]));
+    }
+    let Some(child) = children.first_mut().and_then(Value::as_dict_mut) else {
+        return;
+    };
+    set_entry(
+        child,
+        "Procession",
+        Value::Int(if vertical { 1 } else { 0 }),
+    );
+    if !child.iter().any(|(k, _)| k == "Lines") {
+        child.push(("Lines".to_string(), Value::dict(std::iter::empty::<(String, Value)>())));
+    }
+    if let Some(lines) = entry_mut(child, "Lines").and_then(Value::as_dict_mut) {
+        set_entry(lines, "WritingDirection", Value::Int(writing));
     }
 }
 
@@ -252,10 +309,7 @@ fn dict_entry<'a>(
     entry_mut(dict, key).and_then(Value::as_dict_mut)
 }
 
-fn entry_mut<'a>(
-    dict: &'a mut Vec<(String, Value)>,
-    key: &str,
-) -> Option<&'a mut Value> {
+fn entry_mut<'a>(dict: &'a mut Vec<(String, Value)>, key: &str) -> Option<&'a mut Value> {
     dict.iter_mut().find(|(k, _)| k == key).map(|(_, v)| v)
 }
 
@@ -324,15 +378,33 @@ fn set_editor_text(root: &mut Value, text: &str) {
 
 /// The `ParagraphSheet` item `apply_paragraph_runs` fills in from its template.
 fn paragraph_template() -> Value {
-    Value::dict([(
-        "ParagraphSheet",
-        Value::dict([
-            ("DefaultStyleSheet", Value::Int(0)),
-            ("Properties", Value::dict([("LeadingType", Value::Int(0))])),
-        ]),
-    )])
+    Value::dict([
+        (
+            "ParagraphSheet",
+            Value::dict([
+                ("DefaultStyleSheet", Value::Int(0)),
+                ("Properties", Value::dict([("LeadingType", Value::Int(0))])),
+            ]),
+        ),
+        (
+            "Adjustments",
+            Value::dict([
+                (
+                    "Axis",
+                    Value::Array(vec![
+                        Value::Float(1.0),
+                        Value::Float(0.0),
+                        Value::Float(1.0),
+                    ]),
+                ),
+                (
+                    "XY",
+                    Value::Array(vec![Value::Float(0.0), Value::Float(0.0)]),
+                ),
+            ]),
+        ),
+    ])
 }
-
 
 /// Photoshop 20.0.2's text resources: the superscript/subscript metrics and the small-cap size
 /// every `EngineData` block carries. CoolType reads them even for plain Latin text; a block
@@ -350,7 +422,15 @@ fn grid_info() -> Value {
     let black = || {
         Value::dict([
             ("Type", Value::Int(1)),
-            ("Values", Value::Array(vec![Value::Float(0.0), Value::Float(0.0), Value::Float(0.0), Value::Float(1.0)])),
+            (
+                "Values",
+                Value::Array(vec![
+                    Value::Float(0.0),
+                    Value::Float(0.0),
+                    Value::Float(0.0),
+                    Value::Float(1.0),
+                ]),
+            ),
         ])
     };
     Value::dict([
@@ -377,8 +457,18 @@ fn default_paragraph_run_data() -> Value {
         (
             "Adjustments",
             Value::dict([
-                ("Axis", Value::Array(vec![Value::Float(1.0), Value::Float(0.0), Value::Float(1.0)])),
-                ("XY", Value::Array(vec![Value::Float(0.0), Value::Float(0.0)])),
+                (
+                    "Axis",
+                    Value::Array(vec![
+                        Value::Float(1.0),
+                        Value::Float(0.0),
+                        Value::Float(1.0),
+                    ]),
+                ),
+                (
+                    "XY",
+                    Value::Array(vec![Value::Float(0.0), Value::Float(0.0)]),
+                ),
             ]),
         ),
     ])
@@ -412,11 +502,15 @@ fn kinsoku_set() -> Value {
 fn mojikumi_set() -> Value {
     Value::Array(
         (1..=4)
-            .map(|n| Value::dict([("InternalName", Value::Str(format!("Photoshop6MojiKumiSet{n}")))]))
+            .map(|n| {
+                Value::dict([(
+                    "InternalName",
+                    Value::Str(format!("Photoshop6MojiKumiSet{n}")),
+                )])
+            })
             .collect(),
     )
 }
-
 
 /// Replaces a sparse default character or paragraph sheet an older writer wrote (CoolType reads
 /// it as the fallback for every run that names it) with Photoshop's full default. A Photoshop
@@ -425,8 +519,18 @@ fn ensure_default_sheets(resources: &mut Vec<(String, Value)>) {
     let full_style = default_style_sheet;
     let full_paragraph = default_paragraph_sheet;
     for (key, default, sheet_key, minimum) in [
-        ("StyleSheetSet", full_style as fn() -> Value, "StyleSheetData", 20usize),
-        ("ParagraphSheetSet", full_paragraph as fn() -> Value, "Properties", 15usize),
+        (
+            "StyleSheetSet",
+            full_style as fn() -> Value,
+            "StyleSheetData",
+            20usize,
+        ),
+        (
+            "ParagraphSheetSet",
+            full_paragraph as fn() -> Value,
+            "Properties",
+            15usize,
+        ),
     ] {
         let Some(Value::Array(sheets)) = entry_mut(resources, key) else {
             continue;
@@ -494,7 +598,12 @@ pub(super) fn ensure_photoshop_scaffold(root: &mut Value) {
     let mirrored: Vec<(String, Value)> = top
         .iter()
         .find(|(k, _)| k == "ResourceDict")
-        .map(|(_, value)| value.as_dict().map(<[(String, Value)]>::to_vec).unwrap_or_default())
+        .map(|(_, value)| {
+            value
+                .as_dict()
+                .map(<[(String, Value)]>::to_vec)
+                .unwrap_or_default()
+        })
         .unwrap_or_default();
     if let Some(document) = dict_entry(top, "DocumentResources") {
         for (name, value) in mirrored {
@@ -519,7 +628,6 @@ pub(super) fn ensure_photoshop_scaffold(root: &mut Value) {
         }
     }
 }
-
 
 /// The shared default character sheet Photoshop writes in
 /// `ResourceDict/StyleSheetSet` (and mirrors in `DocumentResources`). CoolType reads it as the
@@ -549,14 +657,36 @@ fn default_style_sheet() -> Value {
         ("StyleRunAlignment", Value::Int(2)),
         ("Language", Value::Int(0)),
         ("NoBreak", Value::Bool(false)),
-        ("FillColor", Value::dict([
-            ("Type", Value::Int(1)),
-            ("Values", Value::Array(vec![Value::Float(1.0), Value::Float(0.0), Value::Float(0.0), Value::Float(0.0)])),
-        ])),
-        ("StrokeColor", Value::dict([
-            ("Type", Value::Int(1)),
-            ("Values", Value::Array(vec![Value::Float(1.0), Value::Float(0.0), Value::Float(0.0), Value::Float(0.0)])),
-        ])),
+        (
+            "FillColor",
+            Value::dict([
+                ("Type", Value::Int(1)),
+                (
+                    "Values",
+                    Value::Array(vec![
+                        Value::Float(1.0),
+                        Value::Float(0.0),
+                        Value::Float(0.0),
+                        Value::Float(0.0),
+                    ]),
+                ),
+            ]),
+        ),
+        (
+            "StrokeColor",
+            Value::dict([
+                ("Type", Value::Int(1)),
+                (
+                    "Values",
+                    Value::Array(vec![
+                        Value::Float(1.0),
+                        Value::Float(0.0),
+                        Value::Float(0.0),
+                        Value::Float(0.0),
+                    ]),
+                ),
+            ]),
+        ),
         ("FillFlag", Value::Bool(true)),
         ("StrokeFlag", Value::Bool(false)),
         ("FillFirst", Value::Bool(true)),
@@ -584,9 +714,30 @@ fn default_paragraph_sheet() -> Value {
         ("PostHyphen", Value::Int(2)),
         ("ConsecutiveHyphens", Value::Int(8)),
         ("Zone", Value::Float(36.0)),
-        ("WordSpacing", Value::Array(vec![Value::Float(0.8), Value::Float(1.0), Value::Float(1.33)])),
-        ("LetterSpacing", Value::Array(vec![Value::Float(0.0), Value::Float(0.0), Value::Float(0.0)])),
-        ("GlyphSpacing", Value::Array(vec![Value::Float(1.0), Value::Float(1.0), Value::Float(1.0)])),
+        (
+            "WordSpacing",
+            Value::Array(vec![
+                Value::Float(0.8),
+                Value::Float(1.0),
+                Value::Float(1.33),
+            ]),
+        ),
+        (
+            "LetterSpacing",
+            Value::Array(vec![
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.0),
+            ]),
+        ),
+        (
+            "GlyphSpacing",
+            Value::Array(vec![
+                Value::Float(1.0),
+                Value::Float(1.0),
+                Value::Float(1.0),
+            ]),
+        ),
         ("AutoLeading", Value::Float(1.2)),
         ("LeadingType", Value::Int(0)),
         ("Hanging", Value::Bool(false)),
@@ -666,6 +817,9 @@ pub(super) fn build_engine_data(
         }
     }
 
+    // PS rewrites the font table on save (see `normalize_font_table`): sizes
+    // and indices change before the run sheets are serialised.
+    normalize_font_table(&mut root, styles);
     let style_run = runs::to_engine_data(styles);
     let mut paragraph_run = Value::dict([
         ("RunArray", Value::Array(vec![paragraph_template()])),
@@ -779,6 +933,9 @@ pub(super) fn build_engine_data(
     // engine aborts on a block without the scaffold (`GridInfo`, `ParagraphRun/DefaultRunData`,
     // the resource scalars, the Kinsoku/MojiKumi sets): write the full set for a fresh layer.
     ensure_photoshop_scaffold(&mut root);
+    // Photoshop's own font table: the two fallback faces every block carries,
+    // and the resource default sheet pointing at `MyriadPro-Regular`.
+    ps_font_defaults(&mut root);
     // Last, so it also covers the `StyleSheetSet` entries written above.
     set_fill_flag(&mut root);
     root
@@ -834,12 +991,179 @@ pub fn set_fill_flag(root: &mut Value) {
     }
 }
 
+/// Photoshop's font resources: `FontSet` ends with the two fallback faces the
+/// engine always carries (`MyriadPro-Regular`, then `AdobeInvisFont`), and the
+/// document default style sheet's `Font` points at `MyriadPro-Regular`, not at
+/// the first face the layer uses (measured on PS 20.0.2's own saves).
+fn ps_font_defaults(root: &mut Value) {
+    const FALLBACKS: [&str; 2] = ["MyriadPro-Regular", "AdobeInvisFont"];
+    for table in ["ResourceDict", "DocumentResources"] {
+        let Some(dict) = root.get_mut(table).and_then(Value::as_dict_mut) else {
+            continue;
+        };
+        let Some(fonts) = dict
+            .iter_mut()
+            .find(|(k, _)| k == "FontSet")
+            .and_then(|(_, v)| v.as_array_mut())
+        else {
+            continue;
+        };
+        let mut push = |name: &str| -> i64 {
+            match fonts
+                .iter()
+                .position(|f| f.get("Name").and_then(Value::as_str) == Some(name))
+            {
+                Some(i) => i as i64,
+                None => {
+                    fonts.push(Value::dict([
+                        ("Name", Value::Str(name.to_owned())),
+                        ("Script", Value::Int(0)),
+                        ("FontType", Value::Int(0)),
+                        ("Synthetic", Value::Int(0)),
+                    ]));
+                    (fonts.len() - 1) as i64
+                }
+            }
+        };
+        let myriad = push(FALLBACKS[0]);
+        let _ = push(FALLBACKS[1]);
+        if let Some(sheets) = dict
+            .iter_mut()
+            .find(|(k, _)| k == "StyleSheetSet")
+            .and_then(|(_, v)| v.as_array_mut())
+            && let Some(data) = sheets
+                .first_mut()
+                .and_then(|s| s.get_mut("StyleSheetData"))
+                .and_then(Value::as_dict_mut)
+        {
+            match data.iter_mut().find(|(k, _)| k == "Font") {
+                Some((_, v)) => *v = Value::Int(myriad),
+                None => data.push(("Font".to_string(), Value::Int(myriad))),
+            }
+        }
+    }
+}
+
+/// Photoshop's font-table normalisation, measured on PS 20 (`writer-parity.md`
+/// residual 1, probes `chars_plain`/`faux_bold`/`faux_italic`/`cjk_plain`):
+///
+/// * keep only the faces some run references, plus `MyriadPro-Regular`,
+///   `AdobeInvisFont` and `Times` (unused/unresolvable faces are dropped);
+/// * a faux-bold run gets a **synthetic duplicate prepended** before its clean
+///   face (`Synthetic` 2 = bold, 1 = italic, 3 = both) and its run index moves
+///   to the duplicate;
+/// * every run is re-indexed (`Txt2 /6/0` and `EngineData Font`).
+fn normalize_font_table(root: &mut Value, styles: &mut [crate::runs::RunStyle]) {
+    // First appearance order of (face, synthetic code).
+    let mut order: Vec<(String, i64)> = Vec::new();
+    let mut index_of = |face: &str, syn: i64, order: &mut Vec<(String, i64)>| -> i64 {
+        if let Some(i) = order.iter().position(|(n, s)| n == face && *s == syn) {
+            return i as i64;
+        }
+        order.push((face.to_owned(), syn));
+        (order.len() - 1) as i64
+    };
+    for style in styles.iter_mut() {
+        let Some(name) = style.font.clone() else { continue };
+        let syn = match (style.faux_bold, style.faux_italic) {
+            (false, false) => 0,
+            (true, false) => 2,
+            (false, true) => 1,
+            (true, true) => 3,
+        };
+        let clean = index_of(&name, 0, &mut order);
+        let at = if syn == 0 {
+            clean
+        } else {
+            // The duplicate is prepended immediately before the clean face and
+            // the run keeps pointing at it (PS re-saves Font 0 for a faux run).
+            let syn_at = order.len();
+            order.push((name.clone(), syn));
+            let dup = order.remove(syn_at);
+            order.insert(clean as usize, dup);
+            clean
+        };
+        style.font_index = Some(at);
+    }
+    for fallback in ["MyriadPro-Regular", "AdobeInvisFont"] {
+        let _ = index_of(fallback, 0, &mut order);
+    }
+    // `Times` is not a guaranteed fallback: PS keeps it only when the document
+    // already carried it, so include it when it was present before the rewrite.
+    let had_times = root
+        .get("ResourceDict")
+        .and_then(|d| d.get("FontSet"))
+        .and_then(Value::as_array)
+        .is_some_and(|f| f.iter().any(|e| e.get("Name").and_then(Value::as_str) == Some("Times")));
+    if had_times {
+        let _ = index_of("Times", 0, &mut order);
+    }
+    let myriad = order
+        .iter()
+        .position(|(n, s)| n == "MyriadPro-Regular" && *s == 0)
+        .unwrap_or(0) as i64;
+    let fonts: Vec<Value> = order
+        .iter()
+        .map(|(name, syn)| {
+            Value::dict([
+                ("Name", Value::Str(name.clone())),
+                // Real faces are type 1; PS's fallback faces are type 0.
+                // Per-face `FontType`/`Script` are Photoshop font-database
+                // properties, measured from PS's own `ResourceDict.FontSet`
+                // (`writer-parity` probes; table in the parity report).
+                ("FontType", Value::Int(face_meta(name).0)),
+                ("Script", Value::Int(face_meta(name).1)),
+                ("Synthetic", Value::Int(*syn)),
+            ])
+        })
+        .collect();
+    for table in ["ResourceDict", "DocumentResources"] {
+        let Some(dict) = root.get_mut(table).and_then(Value::as_dict_mut) else {
+            continue;
+        };
+        match dict.iter_mut().find(|(k, _)| k == "FontSet") {
+            Some((_, v)) => *v = Value::Array(fonts.clone()),
+            None => dict.push(("FontSet".to_string(), Value::Array(fonts.clone()))),
+        }
+        if let Some(sheets) = dict
+            .iter_mut()
+            .find(|(k, _)| k == "StyleSheetSet")
+            .and_then(|(_, v)| v.as_array_mut())
+            && let Some(data) = sheets
+                .first_mut()
+                .and_then(|s| s.get_mut("StyleSheetData"))
+                .and_then(Value::as_dict_mut)
+        {
+            match data.iter_mut().find(|(k, _)| k == "Font") {
+                Some((_, v)) => *v = Value::Int(myriad),
+                None => data.push(("Font".to_string(), Value::Int(myriad))),
+            }
+        }
+    }
+}
+
+/// Photoshop's per-face font metadata (`FontType`, `Script`), measured from PS
+/// 20's own `ResourceDict.FontSet` for the fixture faces; anything unknown
+/// falls back to the TrueType-like `(1, 0)`.
+fn face_meta(name: &str) -> (i64, i64) {
+    match name {
+        "NotoSans-Regular" | "NotoSans-Bold" => (1, 0),
+        "MyriadPro-Regular" | "AdobeInvisFont" | "Times" | "TimesNewRomanPSMT" => (0, 0),
+        "CCGrimNGritty-Regular" => (0, 0),
+        "CCMeanwhile" => (0, 8),
+        "AdobeHeitiStd-Regular" => (2, 3),
+        other if other.contains("Heiti") || other.contains("CJK") => (2, 3),
+        other if other.contains("Grim") || other.contains("Meanwhile") => (0, 0),
+        _ => (1, 0),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{RESOURCE_SCALARS, build_engine_data, with_engine_data};
     use crate::engine_data::{self, Value};
-    use crate::runs::RunStyle;
     use crate::psd::LayerSpec;
+    use crate::runs::RunStyle;
 
     /// The key set of the dictionary at `path`, sorted.
     fn keys(value: &Value, path: &[&str]) -> Vec<String> {
@@ -865,9 +1189,10 @@ mod tests {
     /// Photoshop-authored block, so it is the reference.
     #[test]
     fn fresh_engine_data_has_the_photoshop_scaffold() {
-        let reference =
-            engine_data::parse(include_bytes!("../../tests/assets/models/point_plain.engine.bin"))
-                .expect("reference EngineData");
+        let reference = engine_data::parse(include_bytes!(
+            "../../tests/assets/models/point_plain.engine.bin"
+        ))
+        .expect("reference EngineData");
         let spec = LayerSpec::default();
         let mut styles = vec![RunStyle::default()];
         let fresh = build_engine_data("Hi", &spec, &mut styles, &[]);
@@ -880,7 +1205,11 @@ mod tests {
             &["EngineDict", "GridInfo"][..],
             &["EngineDict", "ParagraphRun", "DefaultRunData"][..],
         ] {
-            assert_eq!(keys(&fresh, path), keys(&reference, path), "key set at {path:?}");
+            assert_eq!(
+                keys(&fresh, path),
+                keys(&reference, path),
+                "key set at {path:?}"
+            );
         }
         // The scalars are Photoshop's own values, in both copies of the resource table.
         for (name, want) in RESOURCE_SCALARS {
@@ -911,7 +1240,10 @@ mod tests {
                 "ResourceDict",
                 Value::dict([
                     ("SuperscriptSize", Value::Float(0.5)),
-                    ("StyleSheetSet", Value::Array(vec![Value::dict([("Name", Value::Str("Old".into()))])])),
+                    (
+                        "StyleSheetSet",
+                        Value::Array(vec![Value::dict([("Name", Value::Str("Old".into()))])]),
+                    ),
                 ]),
             ),
         ]);
@@ -927,7 +1259,10 @@ mod tests {
         for key in ["DocumentResources", "KinsokuSet"] {
             node = node.get(key).unwrap_or_else(|| panic!("missing {key}"));
         }
-        assert!(node.as_array().is_some_and(|set| !set.is_empty()), "DocumentResources/KinsokuSet");
+        assert!(
+            node.as_array().is_some_and(|set| !set.is_empty()),
+            "DocumentResources/KinsokuSet"
+        );
         for path in [
             &["EngineDict", "GridInfo"][..],
             &["ResourceDict", "KinsokuSet"][..],
@@ -937,7 +1272,9 @@ mod tests {
         ] {
             let mut node = &root;
             for key in path {
-                node = node.get(key).unwrap_or_else(|| panic!("missing {key:?} under {path:?}"));
+                node = node
+                    .get(key)
+                    .unwrap_or_else(|| panic!("missing {key:?} under {path:?}"));
             }
         }
         let _ = &mut node;

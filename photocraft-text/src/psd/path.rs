@@ -72,13 +72,20 @@ fn lerp(a: Pt, b: Pt, t: f64) -> Pt {
 
 /// The point of cubic segment `s` at parameter `t`.
 fn cubic(s: &Seg, t: f64) -> Pt {
-    let (a, b, c) = (lerp(s[0], s[1], t), lerp(s[1], s[2], t), lerp(s[2], s[3], t));
+    let (a, b, c) = (
+        lerp(s[0], s[1], t),
+        lerp(s[1], s[2], t),
+        lerp(s[2], s[3], t),
+    );
     lerp(lerp(a, b, t), lerp(b, c, t), t)
 }
 
 /// Maps a frame-space point through a `[a, b, c, d, e, f]` matrix.
 fn apply(m: [f64; 6], p: Pt) -> Pt {
-    [m[0] * p[0] + m[2] * p[1] + m[4], m[1] * p[0] + m[3] * p[1] + m[5]]
+    [
+        m[0] * p[0] + m[2] * p[1] + m[4],
+        m[1] * p[0] + m[3] * p[1] + m[5],
+    ]
 }
 
 fn matrix_ok(m: [f64; 6]) -> bool {
@@ -180,7 +187,10 @@ impl FrameSource<'_> {
 fn segments(source: FrameSource<'_>) -> Result<(Vec<Seg>, bool), String> {
     let raw = source.numbers().ok_or("the frame has no path")?;
     if raw.is_empty() || !raw.len().is_multiple_of(8) {
-        return Err(format!("its path has {} coordinates, not whole curve segments", raw.len()));
+        return Err(format!(
+            "its path has {} coordinates, not whole curve segments",
+            raw.len()
+        ));
     }
     if raw.len() / 8 > MAX_SEGMENTS {
         return Err(format!("its path has more than {MAX_SEGMENTS} segments"));
@@ -190,13 +200,21 @@ fn segments(source: FrameSource<'_>) -> Result<(Vec<Seg>, bool), String> {
         Some(m) if matrix_ok(m) => Some(m),
         Some(_) => return Err("its frame matrix is degenerate".into()),
     };
-    let mut points: Vec<Pt> = raw.as_chunks::<2>().0.iter().map(|&[x, y]| [x, y]).collect();
+    let mut points: Vec<Pt> = raw
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&[x, y]| [x, y])
+        .collect();
     if source.applies_matrix()
         && let Some(m) = matrix
     {
         points = points.into_iter().map(|p| apply(m, p)).collect();
     }
-    if points.iter().any(|p| !p[0].is_finite() || !p[1].is_finite()) {
+    if points
+        .iter()
+        .any(|p| !p[0].is_finite() || !p[1].is_finite())
+    {
         return Err("its path is out of range".into());
     }
     let segs: Vec<Seg> = points.as_chunks::<4>().0.to_vec();
@@ -206,7 +224,12 @@ fn segments(source: FrameSource<'_>) -> Result<(Vec<Seg>, bool), String> {
     let (Some(first), Some(last)) = (segs.first(), segs.last()) else {
         return Err("the frame has no path".into());
     };
-    let (mut x0, mut x1, mut y0, mut y1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+    let (mut x0, mut x1, mut y0, mut y1) = (
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    );
     for p in &points {
         x0 = x0.min(p[0]);
         x1 = x1.max(p[0]);
@@ -240,12 +263,19 @@ fn smooth(anchor: Pt, a: Pt, b: Pt) -> bool {
 }
 
 fn knot(in_ctrl: Pt, anchor: Pt, out_ctrl: Pt) -> Knot {
-    Knot { anchor, in_ctrl, out_ctrl, smooth: smooth(anchor, in_ctrl, out_ctrl) }
+    Knot {
+        anchor,
+        in_ctrl,
+        out_ctrl,
+        smooth: smooth(anchor, in_ctrl, out_ctrl),
+    }
 }
 
 /// The knots of `segs` (closing when `closed`), the first knot first.
 fn knots_of(segs: &[Seg], closed: bool) -> Vec<Knot> {
-    let Some(last) = segs.last() else { return Vec::new() };
+    let Some(last) = segs.last() else {
+        return Vec::new();
+    };
     let mut knots: Vec<Knot> = Vec::with_capacity(segs.len() + 1);
     for (i, s) in segs.iter().enumerate() {
         let prev = match i.checked_sub(1).and_then(|j| segs.get(j)) {
@@ -309,7 +339,11 @@ impl Sub {
 /// each of the `n` equal parameter steps of `s`, starting with zero.
 fn flattened(s: &Seg) -> Vec<f64> {
     let poly = dist(s[0], s[1]) + dist(s[1], s[2]) + dist(s[2], s[3]);
-    let n = if poly.is_finite() { ((poly / 2.0).ceil() as usize).clamp(4, 128) } else { 4 };
+    let n = if poly.is_finite() {
+        ((poly / 2.0).ceil() as usize).clamp(4, 128)
+    } else {
+        4
+    };
     let mut cum = Vec::with_capacity(n + 1);
     let mut acc = 0.0;
     let mut prev = s[0];
@@ -358,20 +392,31 @@ impl Measure {
     fn arc(&self, p: f64) -> f64 {
         let p = p.clamp(0.0, self.count());
         let i = (p.floor() as usize).min(self.segs.len().saturating_sub(1));
-        let (Some(cum), Some(base)) = (self.segs.get(i), self.at.get(i)) else { return 0.0 };
+        let (Some(cum), Some(base)) = (self.segs.get(i), self.at.get(i)) else {
+            return 0.0;
+        };
         let steps = cum.len().saturating_sub(1).max(1) as f64;
         let u = ((p - i as f64) * steps).clamp(0.0, steps);
         let k = (u.floor() as usize).min(cum.len().saturating_sub(2));
-        let (a, b) = (cum.get(k).copied().unwrap_or(0.0), cum.get(k + 1).copied().unwrap_or(0.0));
+        let (a, b) = (
+            cum.get(k).copied().unwrap_or(0.0),
+            cum.get(k + 1).copied().unwrap_or(0.0),
+        );
         base + a + (b - a) * (u - k as f64)
     }
 
     /// The range position (segment index plus parameter) at arc length `s`,
     /// clamped to the path.
     fn position(&self, s: f64) -> f64 {
-        let s = if s.is_finite() { s.clamp(0.0, self.length()) } else { 0.0 };
+        let s = if s.is_finite() {
+            s.clamp(0.0, self.length())
+        } else {
+            0.0
+        };
         for (i, cum) in self.segs.iter().enumerate() {
-            let (Some(base), Some(next)) = (self.at.get(i), self.at.get(i + 1)) else { break };
+            let (Some(base), Some(next)) = (self.at.get(i), self.at.get(i + 1)) else {
+                break;
+            };
             if s > *next && i + 1 < self.segs.len() {
                 continue;
             }
@@ -380,7 +425,11 @@ impl Measure {
             for (k, w) in cum.windows(2).enumerate() {
                 let (a, b) = (w[0], w[1]);
                 if left <= b || k + 1 == steps {
-                    let f = if b > a { ((left - a) / (b - a)).clamp(0.0, 1.0) } else { 0.0 };
+                    let f = if b > a {
+                        ((left - a) / (b - a)).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
                     return i as f64 + (k as f64 + f) / steps as f64;
                 }
             }
@@ -446,7 +495,14 @@ pub fn read_shape(source: FrameSource<'_>) -> Option<ShapeSpec> {
             // with its end a lap on (see [`frame_parts`]).
             Some(e) if closed => {
                 let d = e - start_arc;
-                start_arc + if d.abs() <= SAME_ARC { 0.0 } else if d > 0.0 { d } else { d + length }
+                start_arc
+                    + if d.abs() <= SAME_ARC {
+                        0.0
+                    } else if d > 0.0 {
+                        d
+                    } else {
+                        d + length
+                    }
             }
             Some(e) => e.max(start_arc),
             None if closed => start_arc + length,
@@ -457,7 +513,11 @@ pub fn read_shape(source: FrameSource<'_>) -> Option<ShapeSpec> {
     // Flipped type is the same stretch of path measured from the other end.
     let (start, end) = if flip {
         let reversed_start = length - end;
-        let reversed_start = if closed { reversed_start.rem_euclid(length) } else { reversed_start.max(0.0) };
+        let reversed_start = if closed {
+            reversed_start.rem_euclid(length)
+        } else {
+            reversed_start.max(0.0)
+        };
         (reversed_start, reversed_start + (end - start))
     } else {
         (start, end)
@@ -479,7 +539,10 @@ pub fn read_shape(source: FrameSource<'_>) -> Option<ShapeSpec> {
         flip: source.flip(),
         matrix: source.matrix().ok().flatten(),
     };
-    Some(ShapeSpec { frame: Some(frame), path: Some(path) })
+    Some(ShapeSpec {
+        frame: Some(frame),
+        path: Some(path),
+    })
 }
 
 /// `path` with its knots in the opposite order (the segments run backwards).
@@ -488,13 +551,21 @@ fn reversed(path: &Sub) -> Sub {
         .knots
         .iter()
         .rev()
-        .map(|k| Knot { anchor: k.anchor, in_ctrl: k.out_ctrl, out_ctrl: k.in_ctrl, smooth: k.smooth })
+        .map(|k| Knot {
+            anchor: k.anchor,
+            in_ctrl: k.out_ctrl,
+            out_ctrl: k.in_ctrl,
+            smooth: k.smooth,
+        })
         .collect();
     if path.closed && !knots.is_empty() {
         // Keep the first knot first: k0, k(n-1), …, k1.
         knots.rotate_right(1);
     }
-    Sub { knots, closed: path.closed }
+    Sub {
+        knots,
+        closed: path.closed,
+    }
 }
 
 /// `path` starting `s` px along it: an open path loses the part before `s`, a
@@ -506,7 +577,10 @@ fn starting_at(path: &Sub, s: f64) -> Sub {
         .map(|seg| {
             (1..=STEPS)
                 .map(|i| {
-                    let (a, b) = (cubic(seg, (i - 1) as f64 / STEPS as f64), cubic(seg, i as f64 / STEPS as f64));
+                    let (a, b) = (
+                        cubic(seg, (i - 1) as f64 / STEPS as f64),
+                        cubic(seg, i as f64 / STEPS as f64),
+                    );
                     dist(a, b)
                 })
                 .sum()
@@ -535,7 +609,11 @@ fn starting_at(path: &Sub, s: f64) -> Sub {
             let (a, b) = (cubic(seg, t0), cubic(seg, t1));
             let piece = dist(a, b);
             if walked + piece >= left || k == STEPS {
-                let f = if piece > 0.0 { ((left - walked) / piece).clamp(0.0, 1.0) } else { 0.0 };
+                let f = if piece > 0.0 {
+                    ((left - walked) / piece).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
                 at = Some((i, t0 + (t1 - t0) * f, *seg));
                 break;
             }
@@ -543,9 +621,15 @@ fn starting_at(path: &Sub, s: f64) -> Sub {
         }
         break;
     }
-    let Some((i, t, seg)) = at else { return path.clone() };
+    let Some((i, t, seg)) = at else {
+        return path.clone();
+    };
     // de Casteljau: left half p0 a ab m, right half m bc c p3.
-    let (a, b, c) = (lerp(seg[0], seg[1], t), lerp(seg[1], seg[2], t), lerp(seg[2], seg[3], t));
+    let (a, b, c) = (
+        lerp(seg[0], seg[1], t),
+        lerp(seg[1], seg[2], t),
+        lerp(seg[2], seg[3], t),
+    );
     let (ab, bc) = (lerp(a, b, t), lerp(b, c, t));
     let m = lerp(ab, bc, t);
     let n = path.knots.len();
@@ -554,11 +638,18 @@ fn starting_at(path: &Sub, s: f64) -> Sub {
     }
     let next = (i + 1) % n;
     let mut knots = Vec::with_capacity(n + 1);
-    knots.push(Knot { anchor: m, in_ctrl: if path.closed { ab } else { m }, out_ctrl: bc, smooth: path.closed });
+    knots.push(Knot {
+        anchor: m,
+        in_ctrl: if path.closed { ab } else { m },
+        out_ctrl: bc,
+        smooth: path.closed,
+    });
     let count = if path.closed { n } else { n - next };
     for r in 0..count {
         let j = (next + r) % n;
-        let Some(mut k) = path.knots.get(j).copied() else { continue };
+        let Some(mut k) = path.knots.get(j).copied() else {
+            continue;
+        };
         if j == next {
             k.in_ctrl = c;
         }
@@ -567,7 +658,10 @@ fn starting_at(path: &Sub, s: f64) -> Sub {
         }
         knots.push(k);
     }
-    Sub { knots, closed: path.closed }
+    Sub {
+        knots,
+        closed: path.closed,
+    }
 }
 
 /// The path a frame is written with for a moved start / flipped type with the
@@ -582,7 +676,11 @@ fn frame_path(path: &Sub, start: f32, flip: bool) -> Sub {
 /// segment list starts at the second knot, and the `/6` range.
 fn frame_parts(path: &Sub, start: f32, end: Option<f32>, flip: bool) -> (Sub, bool, [f64; 2]) {
     const DEFAULT: [f64; 2] = [-1.0, -1.0];
-    let start = if start.is_finite() { f64::from(start) } else { 0.0 };
+    let start = if start.is_finite() {
+        f64::from(start)
+    } else {
+        0.0
+    };
     let end = end.map(f64::from).filter(|e| e.is_finite());
     if path.closed {
         let path = frame_path(path, start as f32, flip);
@@ -619,8 +717,17 @@ fn segment_list(path: &Sub, rotate: bool) -> Option<Vec<f64>> {
     if rotate && path.closed && !knots.is_empty() {
         knots.rotate_left(1);
     }
-    let segs = Sub { knots, closed: path.closed }.segments();
-    if segs.is_empty() || segs.iter().flatten().any(|p| !p[0].is_finite() || !p[1].is_finite()) {
+    let segs = Sub {
+        knots,
+        closed: path.closed,
+    }
+    .segments();
+    if segs.is_empty()
+        || segs
+            .iter()
+            .flatten()
+            .any(|p| !p[0].is_finite() || !p[1].is_finite())
+    {
         return None;
     }
     Some(text_space_points(&segs))
@@ -642,6 +749,7 @@ pub fn to_frame_parts(shape: &ShapeSpec) -> Option<txt2::FramePath> {
             range: frame.range,
             flip: frame.flip,
             matrix: frame.matrix,
+            vertical: None,
         });
     }
     let path = shape.path.as_ref()?;
@@ -656,6 +764,7 @@ pub fn to_frame_parts(shape: &ShapeSpec) -> Option<txt2::FramePath> {
         range,
         flip: Some(false),
         matrix: None,
+        vertical: None,
     })
 }
 
