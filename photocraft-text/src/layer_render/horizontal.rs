@@ -29,6 +29,22 @@ pub(super) fn text_style_of(run: &RunStyle, fallback: &TextStyle) -> TextStyle {
     }
 }
 
+/// Clears the vertical-only flags a *horizontal* layout must ignore.
+///
+/// `BaselineDirection 2` (roman text rotated along a vertical column) is a
+/// property of vertical type, but Photoshop's document default style sheet can
+/// store `2` and a horizontal run that omits its own value inherits it. Shaping
+/// such a run as rotated turned every horizontal glyph 90 degrees
+/// (`Untitled-15.psd`: the ink became 16 px tall and 7 px wider instead of the
+/// font's 24 px ascender), so every horizontal shaping entry drops the flag.
+fn horizontal_runs(runs: &[RunStyle]) -> Vec<RunStyle> {
+    let mut out = runs.to_vec();
+    for run in &mut out {
+        run.rotate_roman = None;
+    }
+    out
+}
+
 /// Maps each `EngineData` paragraph run onto the layout's paragraph style.
 pub fn paragraph_styles_of(runs: &[runs::ParagraphRun]) -> Vec<ParagraphStyle> {
     runs.iter()
@@ -130,7 +146,15 @@ pub fn render_text_layer_with_atlases(
     // faux italic, caps, colour) into `Line::attrs`; the single-style
     // `layout_area` cannot, so anything that changes between characters needs
     // it. `runs` is usually one run from the live editor, but that run still
-    // sets vertical scale and faux styles.
+    // sets vertical scale and faux styles. Horizontal text ignores the
+    // vertical-only `rotate_roman` flag (see [`horizontal_runs`]).
+    let clean_runs;
+    let runs = if runs.is_empty() {
+        runs
+    } else {
+        clean_runs = horizontal_runs(runs);
+        clean_runs.as_slice()
+    };
     let layout = if runs.is_empty() {
         layout_area(
             faces.default_face(),
@@ -210,7 +234,7 @@ fn prepare_impl<'a>(
     box_size: (f32, f32),
     origin: (f32, f32),
 ) -> Result<Prepared<'a>, Error> {
-    let mut style_runs = runs::from_engine_data(ed);
+    let mut style_runs = horizontal_runs(&runs::from_engine_data(ed));
     for (i, f) in features.iter().enumerate() {
         if let Some(run) = style_runs.get_mut(i) {
             run.old_style |= f.old_style;
