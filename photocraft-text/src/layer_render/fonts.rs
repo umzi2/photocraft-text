@@ -338,6 +338,45 @@ pub fn first_baseline_offset_of(store: &FaceStore, ed: &Value) -> Option<f32> {
     ))
 }
 
+/// [`first_baseline_offset_of`] for a Photoshop [`FirstBaseline`] choice
+/// (`Txt2`'s frame setting; see [`crate::area::FirstBaseline`]).
+pub fn first_baseline_offset_of_kind(
+    store: &FaceStore,
+    ed: &Value,
+    kind: crate::area::FirstBaseline,
+) -> Option<f32> {
+    let style_runs = runs::from_engine_data(ed);
+    let first = style_runs.first()?;
+    let face = first
+        .font
+        .as_deref()
+        .and_then(|n| store.face(n))
+        .or_else(|| store.first_face())?;
+    let size = first.size.unwrap_or(12.0);
+    Some(crate::area::first_baseline_offset(
+        crate::area::first_baseline_ratio_kind(&face, kind),
+        size,
+    ))
+}
+
+/// The first-baseline ratio [`first_baseline_offset_of_kind`] multiplies by the
+/// run's size; the render entry points take it to lay the lines out with the
+/// same choice.
+pub fn first_baseline_ratio_of_kind(
+    store: &FaceStore,
+    ed: &Value,
+    kind: crate::area::FirstBaseline,
+) -> Option<f32> {
+    let style_runs = runs::from_engine_data(ed);
+    let first = style_runs.first()?;
+    let face = first
+        .font
+        .as_deref()
+        .and_then(|n| store.face(n))
+        .or_else(|| store.first_face())?;
+    Some(crate::area::first_baseline_ratio_kind(&face, kind))
+}
+
 /// Separator-insensitive font-name key (`CCGrimNGritty-Regular` ==
 /// `CCGrimNGritty Regular`), lowercased, alphanumerics only.
 fn font_key(name: &str) -> String {

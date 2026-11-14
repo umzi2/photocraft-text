@@ -408,6 +408,66 @@ fn object_frame_name(toks: &[Token], object: usize) -> Option<usize> {
     )
 }
 
+/// Photoshop's First baseline choice of text object `object`'s frame
+/// (`/0 /8 /0 [frame] /0 /2 /10 /0`), for horizontal box/area text.
+///
+/// Measured on Photoshop 20.0.2 with `Untitled-16.psd`: the record `2` places
+/// the first baseline at the cap height (Times 33 pt: `21.87881`), the record
+/// absent or `1` at the Ascent (`22.93474`, the default), and `3` at the
+/// paragraph's leading. Only the first two are modeled; other codes, point
+/// frames (no `/2 /0`) and vertical frames (`/2 /1 2`) return `None`, meaning
+/// "no first-baseline choice to apply".
+pub fn object_first_baseline(
+    block: &[u8],
+    object: usize,
+) -> Option<crate::area::FirstBaseline> {
+    use crate::area::FirstBaseline;
+    let toks = tokens(block).ok()?;
+    let name = object_frame_name(&toks, object)?;
+    let frame = usize::try_from(toks[name].kind.as_int()?).ok()?;
+    let data = resolve(
+        &toks,
+        &[
+            Step::Key("0"),
+            Step::Key("8"),
+            Step::Key("0"),
+            Step::Index(frame),
+            Step::Key("0"),
+            Step::Key("2"),
+        ],
+    )?;
+    if !matches!(toks[data].kind, Kind::DictOpen) {
+        return None;
+    }
+    let entries = dict_entries(&toks, data)?;
+    let is_vertical = entries.iter().any(|(key, value)| {
+        key == "1" && toks[*value].kind.as_int() == Some(2)
+    });
+    let is_box = entries.iter().any(|(key, _)| key == "0");
+    if is_vertical || !is_box {
+        return None;
+    }
+    let choice = entries
+        .iter()
+        .find(|(key, _)| key == "10")
+        .and_then(|(_, value)| dict_entries(&toks, *value))
+        .and_then(|choices| {
+            choices
+                .into_iter()
+                .find(|(key, _)| key == "0")
+                .map(|(_, value)| toks[value].kind.as_int())
+        })
+        .flatten();
+    match choice {
+        Some(2) => Some(FirstBaseline::CapHeight),
+        Some(1) => Some(FirstBaseline::Ascent),
+        // A box frame with no stored choice uses Photoshop's default.
+        None => Some(FirstBaseline::Ascent),
+        // Other choices (leading, x height, minimum) are not modeled.
+        _ => None,
+    }
+}
+
 /// The frame index text object `object`'s view names, if it names one.
 pub fn object_frame_index(block: &[u8], object: usize) -> Option<usize> {
     let toks = tokens(block).ok()?;

@@ -286,6 +286,33 @@ impl<'a> Face<'a> {
         best.unwrap_or(self.hhea.ascender as f32 / upm)
     }
 
+    /// Photoshop's **Ascent** first baseline: the ink `yMax` of `d` over the em
+    /// square (falling back to `b`, `h`, `H`, then `hhea`), i.e. what
+    /// [`Face::ascent_ratio`] returned before the cap-height measurement.
+    ///
+    /// This is the default of a `Txt2` frame (`/0 /8 /0 [frame] /0 /2 /10`
+    /// absent): Photoshop 20.0.2 composing `Untitled-16.psd` places the first
+    /// baseline at `0.69499 * 33 = 22.93474` while cap height gives `21.85`
+    /// (`out/verify/untitled16/`). The cap-height rule stays the default for a
+    /// layer read from `TySh` alone, where Photoshop writes `/2 /10 /0 = 2`
+    /// and composes with cap height.
+    pub fn default_ascent_ratio(&self) -> f32 {
+        let upm = self.head.units_per_em as f32;
+        for ch in ['d', 'b', 'h', 'H'] {
+            let Some(gid) = self.glyph_index(ch) else {
+                continue;
+            };
+            let Some((_, _, _, y_max)) = self.glyph_bbox(gid) else {
+                continue;
+            };
+            let ratio = y_max / upm;
+            if ratio.is_finite() && ratio > 0.0 {
+                return ratio;
+            }
+        }
+        self.hhea.ascender as f32 / upm
+    }
+
     fn read_hmtx(data: &[u8], num_h_metrics: u16, num_glyphs: u16) -> Result<(Vec<u16>, Vec<i16>)> {
         let mut r = Reader::new(data);
         let n = num_h_metrics.max(1) as usize;

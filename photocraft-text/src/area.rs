@@ -189,6 +189,29 @@ pub fn first_baseline_ratio(face: &Face<'_>) -> f32 {
     face.ascent_ratio()
 }
 
+/// Photoshop's choice of the metric that places the first baseline in area
+/// text (the Paragraph panel's "First baseline").
+///
+/// `Txt2` stores it per frame as `/0 /8 /0 [frame] /0 /2 /10 /0`; a frame
+/// without the record uses Photoshop's default, [`FirstBaseline::Ascent`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FirstBaseline {
+    /// The default (frame record absent or `1`): Photoshop's Ascent, the ink
+    /// top of `d`, measured at `0.69499 * size` for Times New Roman 33 pt.
+    Ascent,
+    /// The cap height (`2` in the frame record): the shorter ink top of `H`
+    /// and `d`, what [`first_baseline_ratio`] has always returned.
+    CapHeight,
+}
+
+/// First-baseline ratio of `face` for the [`FirstBaseline`] choice.
+pub fn first_baseline_ratio_kind(face: &Face<'_>, kind: FirstBaseline) -> f32 {
+    match kind {
+        FirstBaseline::Ascent => face.default_ascent_ratio(),
+        FirstBaseline::CapHeight => face.ascent_ratio(),
+    }
+}
+
 /// Distance from the top of an area-text box to its first baseline, in points.
 ///
 /// This is the formula Photoshop uses for area text: the ink top of `d` (see

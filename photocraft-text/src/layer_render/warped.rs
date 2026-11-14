@@ -153,6 +153,7 @@ pub fn render_from_engine_data_warped(
                 (0.0, 0.0),
                 Some(warped_target),
                 Some(&draw),
+                None,
             )?;
             // The layer record is the warped ink's bounding box; keep the
             // surface spanning it even where the outermost stroke rounds to

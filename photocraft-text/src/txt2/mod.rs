@@ -32,7 +32,8 @@ pub use cache::{
 };
 pub use frame::{
     FrameGeometry, FramePath, ensure_frame_list, frame_geometry, frame_list_entry, frame_path,
-    object_frame_geometry, object_frame_index, object_frame_path, set_frame_geometry,
+    object_first_baseline, object_frame_geometry, object_frame_index, object_frame_path,
+    set_frame_geometry,
     set_frame_geometry_at, set_frame_vertical, set_object_frame_path, set_point_frame,
 };
 pub use paragraph::{

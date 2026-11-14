@@ -14,14 +14,19 @@ mod paint;
 mod vertical;
 mod warped;
 
-pub use fonts::{FaceStore, first_baseline_offset_of};
+pub use fonts::{
+    FaceStore, first_baseline_offset_of, first_baseline_offset_of_kind,
+    first_baseline_ratio_of_kind,
+};
 pub use horizontal::{
     layout_from_engine_data, layout_from_engine_data_in_rect,
     layout_from_engine_data_in_rect_with_features, layout_from_engine_data_with_paragraphs,
     layout_from_engine_data_with_paragraphs_and_features, paragraph_styles_of,
     render_from_engine_data, render_from_engine_data_in_rect,
     render_from_engine_data_in_rect_with_features, render_from_engine_data_with_paragraphs,
-    render_from_engine_data_with_paragraphs_and_features, render_text_layer,
+    render_from_engine_data_in_rect_with_features_baseline,
+    render_from_engine_data_with_paragraphs_and_features,
+    render_from_engine_data_with_paragraphs_and_features_baseline, render_text_layer,
     render_text_layer_with_atlas, render_text_layer_with_atlases,
 };
 pub use layout::{Caret, CaretCluster, PlacedGlyph, Rect, TextLayout, TextLine};

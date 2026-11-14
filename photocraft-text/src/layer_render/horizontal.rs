@@ -233,6 +233,7 @@ fn prepare_impl<'a>(
     features: &[RunFeatures],
     box_size: (f32, f32),
     origin: (f32, f32),
+    baseline: Option<f32>,
 ) -> Result<Prepared<'a>, Error> {
     let mut style_runs = horizontal_runs(&runs::from_engine_data(ed));
     for (i, f) in features.iter().enumerate() {
@@ -277,7 +278,7 @@ fn prepare_impl<'a>(
         .as_deref()
         .and_then(|n| faces.get(n))
         .unwrap_or_else(|| faces.default_face());
-    let ascender = first_baseline_ratio(primary);
+    let ascender = baseline.unwrap_or_else(|| first_baseline_ratio(primary));
 
     let advance_deltas: Vec<f32> = features
         .iter()
@@ -460,8 +461,11 @@ pub(super) fn render_impl(
     origin: (f32, f32),
     target: Option<RectTarget>,
     warp: Option<&WarpDraw<'_>>,
+    baseline: Option<f32>,
 ) -> Result<LayerPixels, Error> {
-    let prepared = prepare_impl(store, ed, text, paragraphs, features, box_size, origin)?;
+    let prepared = prepare_impl(
+        store, ed, text, paragraphs, features, box_size, origin, baseline,
+    )?;
     render_prepared(prepared, store, target, warp)
 }
 
@@ -478,7 +482,7 @@ fn layout_impl(
     origin: (f32, f32),
     target: Option<RectTarget>,
 ) -> Result<super::layout::TextLayout, Error> {
-    let prepared = prepare_impl(store, ed, text, paragraphs, features, box_size, origin)?;
+    let prepared = prepare_impl(store, ed, text, paragraphs, features, box_size, origin, None)?;
     // The document position of a point is the anchor plus the layout position,
     // with the same fold the rasteriser applies: the canvas column is
     // `target.origin + target.anchor - origin + pen`.
@@ -520,6 +524,7 @@ pub fn render_from_engine_data_with_paragraphs(
         origin,
         None,
         None,
+        None,
     )
 }
 
@@ -551,6 +556,7 @@ pub fn render_from_engine_data_in_rect(
         origin,
         Some(target),
         None,
+        None,
     )
 }
 
@@ -568,7 +574,60 @@ pub fn render_from_engine_data_with_paragraphs_and_features(
     origin: (f32, f32),
 ) -> Result<LayerPixels, Error> {
     render_impl(
-        store, ed, text, paragraphs, features, box_size, origin, None, None,
+        store, ed, text, paragraphs, features, box_size, origin, None, None, None,
+    )
+}
+
+/// As [`render_from_engine_data_with_paragraphs_and_features`], with an
+/// explicit first-baseline ratio instead of the font's cap-height default.
+///
+/// `ascender_ratio` is `Some` for a layer whose `Txt2` frame selects a
+/// different First baseline (see [`crate::area::FirstBaseline`]); Photoshop
+/// places the first line at `ascender_ratio * size` below the frame top. The
+/// layout and the returned [`LayerPixels::offset`] use the same ratio, so the
+/// caller anchors the result exactly like the default path.
+#[allow(clippy::too_many_arguments)]
+pub fn render_from_engine_data_with_paragraphs_and_features_baseline(
+    store: &FaceStore,
+    ed: &Value,
+    text: &str,
+    paragraphs: &[runs::ParagraphRun],
+    features: &[RunFeatures],
+    box_size: (f32, f32),
+    origin: (f32, f32),
+    ascender_ratio: Option<f32>,
+) -> Result<LayerPixels, Error> {
+    render_impl(
+        store, ed, text, paragraphs, features, box_size, origin, None, None, ascender_ratio,
+    )
+}
+
+/// [`render_from_engine_data_in_rect_with_features`] with the explicit
+/// first-baseline ratio of
+/// [`render_from_engine_data_with_paragraphs_and_features_baseline`].
+#[allow(clippy::too_many_arguments)]
+pub fn render_from_engine_data_in_rect_with_features_baseline(
+    store: &FaceStore,
+    ed: &Value,
+    text: &str,
+    paragraphs: &[runs::ParagraphRun],
+    features: &[RunFeatures],
+    box_size: (f32, f32),
+    origin: (f32, f32),
+    target: RectTarget,
+    ascender_ratio: Option<f32>,
+) -> Result<LayerPixels, Error> {
+    render_impl(
+        store,
+        ed,
+        text,
+        paragraphs,
+        features,
+        box_size,
+        origin,
+        Some(target),
+        None,
+        ascender_ratio,
     )
 }
 
@@ -594,6 +653,7 @@ pub fn render_from_engine_data_in_rect_with_features(
         box_size,
         origin,
         Some(target),
+        None,
         None,
     )
 }
